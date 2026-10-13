@@ -929,7 +929,29 @@ document.addEventListener("dragleave", (e) => {
 });
 document.addEventListener("drop", () => document.body.classList.remove("drag-active"));
 
-document.addEventListener("dragend", () => {
+/**
+ * A tab dragged out of the browser window and dropped on the desktop becomes
+ * its own window, the way dragging a tab off Firefox's tab strip does. The
+ * drop landed nowhere (dropEffect "none") and the pointer is outside the
+ * window's bounds, which windows.get() reports in screen coordinates — the
+ * same ones a drag event carries.
+ */
+async function detachIfDroppedOutside(e, tabId) {
+  if (e.dataTransfer?.dropEffect !== "none") return; // something took the drop
+  const win = await browser.windows.get(state.windowId).catch(() => null);
+  if (!win || win.state === "fullscreen") return;
+  const inside =
+    e.screenX >= win.left && e.screenX <= win.left + win.width && e.screenY >= win.top && e.screenY <= win.top + win.height;
+  if (inside) return;
+  // Esc cancels a drag with the pointer wherever it was; a real drop has moved.
+  if (e.screenX === 0 && e.screenY === 0) return;
+  await browser.windows.create({ tabId }).catch((err) => console.error("Arc: detaching the tab failed", err));
+}
+
+document.addEventListener("dragend", (e) => {
+  const row = e.target.closest?.("[data-tab]");
+  const tabId = dragKind === "tab" && row ? Number(row.dataset.tab) : null;
+  if (tabId !== null) detachIfDroppedOutside(e, tabId);
   dragKind = null;
   document.body.classList.remove("drag-active");
   dragging = false;
@@ -1188,7 +1210,15 @@ for (const ev of ["onActivated", "onMoved", "onAttached", "onDetached"]) {
   browser.tabs[ev].addListener(() => schedule(ev !== "onMoved"));
 }
 
+/** Hold a port so the background page stays awake while the sidebar is open. */
+function keepBackgroundAwake() {
+  const port = browser.runtime.connect({ name: "arcsidebar:sidebar" });
+  // Only an extension reload drops the port; reconnect once it is back.
+  port.onDisconnect.addListener(() => setTimeout(keepBackgroundAwake, 1000));
+}
+
 (async () => {
+  keepBackgroundAwake();
   const win = await browser.windows.getCurrent();
   state.windowId = win.id;
   // Private windows show tabs only — no favorites, pins, folders or spaces.

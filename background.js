@@ -283,7 +283,9 @@ async function openCommandBar(windowId) {
  * Firefox open a blank tab in its place.
  */
 async function closeActiveTab() {
-  const win = await browser.windows.getLastFocused().catch(() => null);
+  // One populated window instead of three queries: every round trip to the
+  // parent process is delay the user feels before the tab goes away.
+  const win = await browser.windows.getLastFocused({ populate: true }).catch(() => null);
   if (!win) return;
   // Arc's own windows (the space editor) have no tabs to close: close them.
   if (win.type !== "normal") {
@@ -291,9 +293,9 @@ async function closeActiveTab() {
     return;
   }
   const windowId = win.id;
-  const [tab] = await browser.tabs.query({ active: true, windowId });
+  const tab = (win.tabs || []).find((t) => t.active);
   if (!tab) return;
-  const rest = (await browser.tabs.query({ windowId, hidden: false })).filter((t) => t.id !== tab.id && !t.pinned);
+  const rest = win.tabs.filter((t) => t.id !== tab.id && !t.hidden && !t.pinned);
   if (!rest.length) {
     // Nothing else in this space: keep (or restore) the command bar instead.
     if (commandBars.get(windowId) === tab.id || ArcFox.isNewTabUrl(tab.url)) return;
@@ -586,6 +588,13 @@ browser.commands.onCommand.addListener(async (command) => {
     const space = state.spaces[Number(command.slice(6)) - 1];
     if (space) await ArcFox.switchSpace(await focusedWindowId(), space.id);
   }
+});
+
+// Firefox suspends the event page once it falls idle, and waking it back up
+// delays the first Cmd/Ctrl+T or Cmd/Ctrl+W noticeably. An open sidebar holds a
+// port, which keeps the page alive for as long as Arc is on screen.
+browser.runtime.onConnect.addListener((port) => {
+  port.onDisconnect.addListener(() => {});
 });
 
 browser.action.onClicked.addListener(() => {

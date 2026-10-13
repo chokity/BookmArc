@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.6.3
+
+- Dragging a tab out of the window and dropping it on the desktop opens it in a
+  new window, carrying the tab itself rather than reopening its URL. Cancelling
+  a drag leaves the tab alone.
+- Cmd/Ctrl+W closes faster. Arc asked Firefox three separate questions before
+  removing the tab; it now asks one. The sidebar also holds the background page
+  awake, so the first press after an idle spell no longer waits for it to start.
+
 ## 0.6.2
 
 - Tab on a site in the command bar searches inside it instead of opening it:
