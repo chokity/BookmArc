@@ -360,10 +360,22 @@ async function tabsAround(tab) {
   return { above: listed.slice(0, at), below: listed.slice(at + 1) };
 }
 
+// Command bars on their way somewhere. Firefox reports a tab's new URL only
+// once the page commits, so between Enter and the first paint the tab still
+// looks like the command bar — and Cmd+T would return to it instead of opening
+// a new one, which reads as the shortcut being dead until the page renders.
+const leavingTabs = new Set();
+
+function noteLeaving(tab) {
+  leavingTabs.add(tab.id);
+  setTimeout(() => leavingTabs.delete(tab.id), 20000);
+  if (commandBars.get(tab.windowId) === tab.id) commandBars.delete(tab.windowId);
+}
+
 async function commandBarIn(windowId, ignoreTabId) {
   const palette = browser.runtime.getURL("palette/palette.html");
   const known = commandBars.get(windowId);
-  if (known !== undefined && known !== ignoreTabId) {
+  if (known !== undefined && known !== ignoreTabId && !leavingTabs.has(known)) {
     const tab = await browser.tabs.get(known).catch(() => null);
     // Still the command bar? Once it has been sent somewhere it is an ordinary
     // tab, and Cmd+T has to open a new command bar rather than return to it.
@@ -372,7 +384,9 @@ async function commandBarIn(windowId, ignoreTabId) {
   }
   const url = palette;
   const tabs = await browser.tabs.query({ windowId });
-  const open = tabs.find((t) => t.id !== ignoreTabId && !t.hidden && (t.url || "").startsWith(url)) || null;
+  const open =
+    tabs.find((t) => t.id !== ignoreTabId && !leavingTabs.has(t.id) && !t.hidden && (t.url || "").startsWith(url)) ||
+    null;
   if (open) commandBars.set(windowId, open.id);
   return open;
 }
@@ -416,6 +430,9 @@ async function handleNewTabPage(tab) {
 
 browser.runtime.onMessage.addListener((msg, sender) => {
   if (msg?.type === "arcfox:newtab" && sender.tab) handleNewTabPage(sender.tab);
+  // The command bar is leaving: it stops counting as one now, not when the
+  // page it opened finishes loading.
+  if (msg?.type === "arcfox:navigating" && sender.tab) noteLeaving(sender.tab);
 });
 
 // Blank pages Arc swaps or cancels shouldn't clog Cmd/Ctrl+Shift+T.

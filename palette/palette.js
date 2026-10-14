@@ -246,7 +246,7 @@ document.addEventListener("keydown", (e) => {
     document.body.classList.add("busy");
     hint.textContent = `Searching ${scope.label}…`;
     browser.runtime
-      .sendMessage({ type: "arcsidebar:navigating", tabId: ownTabId, label: `Search ${scope.label}` })
+      .sendMessage({ type: "arcfox:navigating", tabId: ownTabId, label: `Search ${scope.label}` })
       .catch(() => {});
     runScoped(text).catch((err) => console.error("Arc: scoped search failed", err));
   } else if (e.key === "Enter") {
