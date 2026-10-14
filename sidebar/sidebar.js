@@ -107,13 +107,19 @@ async function refresh() {
       again = false;
       const scan = scanDirty;
       scanDirty = false;
+      const t0 = performance.now();
+      // Pruning pings other extensions and waits for their answers, which is
+      // nobody's idea of a tab list: let it run on its own. Dropping a stale
+      // provider writes to session storage, which schedules another refresh.
+      ArcFox.pruneProviders().catch(() => {});
       const [st, icons, allTabs, prefs, badges] = await Promise.all([
         ArcFox.getState(),
         ArcFox.getIconCache(),
         browser.tabs.query({}).then((tabs) => tabs.filter((t) => !removedTabs.has(t.id))),
         browser.storage.local.get([HIDE_FAV_HINT, PINS_COLLAPSED]),
-        ArcFox.pruneProviders().then(() => ArcFox.getBadges()),
+        ArcFox.getBadges(),
       ]);
+      const tData = performance.now();
       state.badges = badges;
       state.hideFavHint = !!prefs[HIDE_FAV_HINT];
       collapsed = prefs[PINS_COLLAPSED] || {};
@@ -140,7 +146,17 @@ async function refresh() {
       }
       for (const tabId of state.tabSpace.keys()) if (!byId.has(tabId)) state.tabSpace.delete(tabId);
       state.tabs = allTabs.filter((t) => t.windowId === state.windowId).sort((a, b) => a.index - b.index);
+      const tScan = performance.now();
       if (!dragging && !renaming) render();
+      // A refresh the eye can catch is a bug; say which part took the time.
+      const end = performance.now();
+      if (end - t0 > 50) {
+        const ms = (a, b) => Math.round(b - a);
+        console.debug(
+          `Arc: refresh ${ms(t0, end)}ms over ${allTabs.length} tabs ` +
+            `(data ${ms(t0, tData)}, bindings ${ms(tData, tScan)}, render ${ms(tScan, end)})`
+        );
+      }
     } while (again);
   } finally {
     running = false;
@@ -1197,6 +1213,14 @@ browser.tabs.onRemoved.addListener((tabId) => {
   setTimeout(() => removedTabs.delete(tabId), 5000);
   state.tabItem.delete(tabId);
   state.tabSpace.delete(tabId);
+  // Drop the row now rather than after the refresh below: the page is already
+  // gone, and the refresh has storage reads and a tabs.query to get through
+  // first, which is long enough to see.
+  if (state.windowId !== null && state.tabs.some((t) => t.id === tabId)) {
+    state.tabs = state.tabs.filter((t) => t.id !== tabId);
+    for (const [itemId, tab] of state.bound) if (tab.id === tabId) state.bound.delete(itemId);
+    render();
+  }
   schedule();
 });
 browser.tabs.onUpdated.addListener((tabId, changes) => {

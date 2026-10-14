@@ -226,13 +226,46 @@ const ArcFox = (() => {
 
   /* ---------- Session values ---------- */
 
+  // Every sessions.getTabValue is a round trip to the parent process, and a
+  // scan asks for two per tab: with a few hundred tabs that is by far the
+  // slowest thing the sidebar does, and it scans on most tab events. The
+  // values only change when Arc writes one, so remember what was read. Only
+  // answers are kept — a tab with no space yet is given one a moment later,
+  // and that must not be cached as "none".
+  const tabValues = new Map(); // `${tabId}:${key}` -> value
+
   async function tabValue(tabId, key) {
+    const cacheId = `${tabId}:${key}`;
+    if (tabValues.has(cacheId)) return tabValues.get(cacheId);
+    let value;
     try {
-      return await browser.sessions.getTabValue(tabId, key);
+      value = await browser.sessions.getTabValue(tabId, key);
     } catch {
-      return undefined;
+      return undefined; // tab already gone
     }
+    if (value !== undefined && value !== null) tabValues.set(cacheId, value);
+    return value;
   }
+
+  /** Record a value this context just wrote, and tell the others to re-read. */
+  function noteTabValue(tabId, key, value) {
+    const cacheId = `${tabId}:${key}`;
+    if (value === undefined || value === null) tabValues.delete(cacheId);
+    else tabValues.set(cacheId, value);
+    // Arc runs in several contexts (background, each sidebar); each caches on
+    // its own, so a write has to reach the rest. Senders don't get their own
+    // message, and nobody listening is fine.
+    browser.runtime.sendMessage({ type: "arcsidebar:tab-value", tabId, key }).catch(() => {});
+  }
+
+  browser.runtime.onMessage.addListener((msg) => {
+    if (msg?.type === "arcsidebar:tab-value") tabValues.delete(`${msg.tabId}:${msg.key}`);
+  });
+
+  browser.tabs.onRemoved.addListener((tabId) => {
+    tabValues.delete(`${tabId}:${ITEM_VALUE}`);
+    tabValues.delete(`${tabId}:${SPACE_VALUE}`);
+  });
 
   async function windowValue(windowId, key) {
     try {
@@ -244,12 +277,19 @@ const ArcFox = (() => {
 
   const getTabItem = (tabId) => tabValue(tabId, ITEM_VALUE);
   const getTabSpace = (tabId) => tabValue(tabId, SPACE_VALUE);
-  const setTabItem = (tabId, itemId) => browser.sessions.setTabValue(tabId, ITEM_VALUE, itemId);
-  const setTabSpace = (tabId, spaceId) => browser.sessions.setTabValue(tabId, SPACE_VALUE, spaceId);
+  const setTabItem = async (tabId, itemId) => {
+    await browser.sessions.setTabValue(tabId, ITEM_VALUE, itemId);
+    noteTabValue(tabId, ITEM_VALUE, itemId);
+  };
+  const setTabSpace = async (tabId, spaceId) => {
+    await browser.sessions.setTabValue(tabId, SPACE_VALUE, spaceId);
+    noteTabValue(tabId, SPACE_VALUE, spaceId);
+  };
 
   async function clearTabItem(tabId) {
     try {
       await browser.sessions.removeTabValue(tabId, ITEM_VALUE);
+      noteTabValue(tabId, ITEM_VALUE, null);
     } catch {
       // tab already gone
     }
@@ -263,7 +303,7 @@ const ArcFox = (() => {
   async function scanTabs(tabs, state) {
     const known = allItemIds(state);
     const metas = await Promise.all(
-      tabs.map(async (t) => [t, await getTabItem(t.id), await getTabSpace(t.id)])
+      tabs.map(async (t) => [t, ...(await Promise.all([getTabItem(t.id), getTabSpace(t.id)]))])
     );
     metas.sort((a, b) => a[0].id - b[0].id);
     const bound = new Map(); // itemId -> tab
