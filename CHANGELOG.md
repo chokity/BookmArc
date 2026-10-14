@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.4
+
+- The window drags by its title bar again. Firefox builds a window's drag
+  region from what the strip paints, and Arc's strip was fully transparent, so
+  there was nothing to grab. It also now spans the sidebar's width (minus the
+  nav buttons) instead of a fixed 150px. Needs the setup script re-run, or
+  chrome/userChrome.css copied again, and a restart.
+
 ## 0.6.3
 
 - Dragging a tab out of the window and dropping it on the desktop opens it in a
