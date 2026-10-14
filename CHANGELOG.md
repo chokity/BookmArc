@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.6.5
+
+- The sidebar keeps up. A refresh asked Firefox for two session values per tab
+  and refreshed on most tab events, so a few hundred tabs meant hundreds of
+  round trips before anything was drawn. They're remembered now. Closing a tab
+  drops its row at once instead of after that refresh, and pinging other
+  extensions for badges no longer holds up the tab list.
+- Cmd/Ctrl+T works while the command bar is loading the page you just asked
+  for. Firefox reports a tab's new address only once the page commits, so until
+  then the tab still looked like the command bar and the shortcut returned to it.
+- Searching inside a site (Tab in the command bar) shows its loading row; the
+  message saying so went out under a name nothing listened for.
+
 ## 0.6.4
 
 - The window drags by its title bar again. Firefox builds a window's drag
