@@ -254,7 +254,18 @@ const handledNewTabs = new Set();
  * either the command bar already in this window comes forward, or a new one
  * opens at the top of the space.
  */
-async function openCommandBar(windowId) {
+// Two Cmd+T presses in the same moment would both find no command bar and
+// both open one, so a window's opens take turns.
+const opening = new Map();
+
+function openCommandBar(windowId) {
+  const after = opening.get(windowId) || Promise.resolve();
+  const open = after.then(() => openBar(windowId));
+  opening.set(windowId, open.catch(() => {}));
+  return open;
+}
+
+async function openBar(windowId) {
   const open = await commandBarIn(windowId);
   if (open) {
     await browser.tabs.update(open.id, { active: true });
@@ -265,6 +276,7 @@ async function openCommandBar(windowId) {
   if (win?.incognito) {
     const tabs = await browser.tabs.query({ windowId });
     const tab = await browser.tabs.create({ url, windowId, index: tabs.filter((t) => t.pinned).length, active: true });
+    paletteTabs.add(tab.id);
     commandBars.set(windowId, tab.id);
     return tab;
   }
@@ -273,6 +285,7 @@ async function openCommandBar(windowId) {
   const space = state.spaces.find((s) => s.id === spaceId);
   const index = await ArcFox.topIndexOfSpace(windowId, spaceId);
   const tab = await ArcFox.createTabInSpace(windowId, space, { url, index, active: true });
+  paletteTabs.add(tab.id);
   commandBars.set(windowId, tab.id);
   return tab;
 }
@@ -318,22 +331,48 @@ async function reuseCommandBar(tab) {
 // Command-bar tabs by window, so a redundant Cmd+T can be undone at once
 // instead of after a tabs.query round trip.
 const commandBars = new Map();
+// Command bars by tab id. A tab Arc just opened reports about:blank for a
+// moment, so the URL alone can't tell one: without this, a Cmd+T right after
+// another would see no bar and open a second empty one.
+const paletteTabs = new Set();
+// Bars that have finished loading. After that, "loading" means the bar is on
+// its way somewhere — the palette says so too, but only if its page got far
+// enough to run.
+const loadedBars = new Set();
+
+const isPaletteUrl = (url) => (url || "").startsWith(browser.runtime.getURL("palette/palette.html"));
 
 function trackCommandBar(tab) {
   if (!tab || tab.id === undefined) return;
-  if ((tab.url || "").startsWith(browser.runtime.getURL("palette/palette.html"))) commandBars.set(tab.windowId, tab.id);
-  else if (commandBars.get(tab.windowId) === tab.id) commandBars.delete(tab.windowId);
+  if (isPaletteUrl(tab.url)) {
+    paletteTabs.add(tab.id);
+    commandBars.set(tab.windowId, tab.id);
+  } else {
+    forgetCommandBar(tab.id, tab.windowId);
+  }
+}
+
+function forgetCommandBar(tabId, windowId) {
+  paletteTabs.delete(tabId);
+  loadedBars.delete(tabId);
+  leavingTabs.delete(tabId);
+  if (commandBars.get(windowId) === tabId) commandBars.delete(windowId);
 }
 
 browser.tabs.onUpdated.addListener((tabId, changes, tab) => {
   if (changes.url !== undefined) trackCommandBar(tab);
-  // Note where the page was seen, so suggestions can stay inside a container.
-  if (changes.status === "complete" && !tab.incognito) {
-    ArcFox.recordVisit(tab.url, tab.cookieStoreId).catch(() => {});
+  if (changes.status === "complete") {
+    if (paletteTabs.has(tabId)) loadedBars.add(tabId);
+    // Note where the page was seen, so suggestions can stay inside a container.
+    if (!tab.incognito) ArcFox.recordVisit(tab.url, tab.cookieStoreId).catch(() => {});
   }
+  // A bar that has loaded and starts loading again is leaving: Firefox still
+  // reports the palette's URL until the new page commits, so without this the
+  // next Cmd+T would come back here.
+  if (changes.status === "loading" && loadedBars.has(tabId)) noteLeaving(tab);
 });
 browser.tabs.onRemoved.addListener((tabId, info) => {
-  if (commandBars.get(info.windowId) === tabId) commandBars.delete(info.windowId);
+  forgetCommandBar(tabId, info.windowId);
 });
 
 /** A visible command-bar tab in `windowId`, if one is already open. */
@@ -373,20 +412,19 @@ function noteLeaving(tab) {
 }
 
 async function commandBarIn(windowId, ignoreTabId) {
-  const palette = browser.runtime.getURL("palette/palette.html");
   const known = commandBars.get(windowId);
   if (known !== undefined && known !== ignoreTabId && !leavingTabs.has(known)) {
     const tab = await browser.tabs.get(known).catch(() => null);
     // Still the command bar? Once it has been sent somewhere it is an ordinary
     // tab, and Cmd+T has to open a new command bar rather than return to it.
-    if (tab && !tab.hidden && (tab.url || "").startsWith(palette)) return tab;
+    if (tab && !tab.hidden && (paletteTabs.has(tab.id) || isPaletteUrl(tab.url))) return tab;
     commandBars.delete(windowId);
   }
-  const url = palette;
   const tabs = await browser.tabs.query({ windowId });
   const open =
-    tabs.find((t) => t.id !== ignoreTabId && !leavingTabs.has(t.id) && !t.hidden && (t.url || "").startsWith(url)) ||
-    null;
+    tabs.find(
+      (t) => t.id !== ignoreTabId && !leavingTabs.has(t.id) && !t.hidden && (paletteTabs.has(t.id) || isPaletteUrl(t.url))
+    ) || null;
   if (open) commandBars.set(windowId, open.id);
   return open;
 }
@@ -405,12 +443,14 @@ async function handleNewTabPage(tab) {
   if (tab.incognito) {
     // Private windows have no spaces or containers: a plain command-bar tab.
     const tabs = await browser.tabs.query({ windowId: tab.windowId });
-    await browser.tabs.create({
+    const bar = await browser.tabs.create({
       url: browser.runtime.getURL("palette/palette.html"),
       windowId: tab.windowId,
       index: tabs.filter((t) => t.pinned).length, // top of the list
       active: tab.active,
     });
+    paletteTabs.add(bar.id);
+    commandBars.set(tab.windowId, bar.id);
     await browser.tabs.remove(tab.id);
     return;
   }
@@ -420,11 +460,13 @@ async function handleNewTabPage(tab) {
   const space = state.spaces.find((s) => s.id === spaceId);
   // New tabs go to the top of the space's list, like Arc.
   const index = await ArcFox.topIndexOfSpace(tab.windowId, spaceId, { ignoreTabId: tab.id });
-  await ArcFox.createTabInSpace(tab.windowId, space, {
+  const bar = await ArcFox.createTabInSpace(tab.windowId, space, {
     url: browser.runtime.getURL("palette/palette.html"),
     index,
     active: tab.active,
   });
+  paletteTabs.add(bar.id);
+  commandBars.set(tab.windowId, bar.id);
   await browser.tabs.remove(tab.id);
 }
 

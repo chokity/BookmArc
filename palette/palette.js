@@ -89,7 +89,7 @@ function setScope(next) {
 
 /** Run `text` against the chip's site. */
 async function runScoped(text) {
-  await ready;
+  await own;
   if (scope.engine) {
     await browser.search.search({ query: text, engine: scope.engine, tabId: ownTabId });
   } else {
@@ -135,7 +135,7 @@ async function run(item) {
   }
   if (closing) return;
   closing = true;
-  await ready; // ownTabId/windowId may still be resolving
+  await own; // ownTabId/windowId may still be resolving
   try {
     if (!item.tab) {
       const label = pendingLabel(item);
@@ -292,13 +292,22 @@ window.addEventListener("focus", () => {
 input.focus();
 document.title = "New Tab";
 
-// Typing can beat this; run() waits on it before acting.
-const ready = (async () => {
+// Which tab this is takes one call. Enter waits for that and nothing else:
+// the lookups below include Firefox's search service, which on a cold start
+// can take long enough that the next Cmd+T comes first — and until this tab
+// says it is leaving, that Cmd+T comes back to this bar instead of opening a
+// new one, which reads as the shortcut being dead until the page loads.
+const own = (async () => {
   const self = await browser.tabs.getCurrent();
   ownTabId = self.id;
   windowId = self.windowId;
   if (document.activeElement !== input) input.focus();
   update(); // frequent sites, before the slower lookups
+})();
+
+// Typing can beat these; they only fill in the tint and the engine's name.
+const ready = (async () => {
+  await own;
 
   // Tint with the space color of the window the bar belongs to.
   const state = await ArcFox.getState();
