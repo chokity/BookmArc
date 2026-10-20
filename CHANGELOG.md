@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.6.6
+
+- Cmd/Ctrl+T no longer waits for the page the command bar just opened. Enter
+  used to wait on Firefox's search service before navigating, and until the bar
+  navigated it still counted as the window's command bar, so the next Cmd+T
+  came back to it. Three or four tabs in a row now open as fast as you type.
+- A command bar Arc had just opened could be missed by the next Cmd+T, which
+  then opened a second empty one. Bars are known by tab id now, not only by
+  their address, and two presses at once can't both decide to open one.
+
 ## 0.6.5
 
 - The sidebar keeps up. A refresh asked Firefox for two session values per tab
