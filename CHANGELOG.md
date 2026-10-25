@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.6.7
+
+- Clicking a favorite or a pinned item works when the space has no tabs of its
+  own. Firefox reports about:blank for a tab opened with an address until the
+  load starts, so the tab Arc had just made looked like the blank one Firefox
+  makes for Cmd+T — and with a command bar open, Arc threw it away and went
+  back to the bar, leaving the click doing nothing.
+- An open that fails is reported instead of swallowed, and marking a tab that
+  has already gone no longer fails whatever opened it.
+
 ## 0.6.6
 
 - Cmd/Ctrl+T no longer waits for the page the command bar just opened. Enter
