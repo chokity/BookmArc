@@ -751,7 +751,12 @@ function itemMenu(itemId) {
 
 els.favorites.addEventListener("click", (e) => {
   const tile = e.target.closest(".tile");
-  if (tile) ArcFox.openItem(tile.dataset.item, state.windowId).then(() => schedule(true));
+  if (tile) {
+    ArcFox.openItem(tile.dataset.item, state.windowId).then(
+      () => schedule(true),
+      (err) => console.error("Arc: opening the favorite failed", err)
+    );
+  }
 });
 
 for (const zone of [els.favorites, els.pinned]) {
@@ -828,7 +833,10 @@ els.pinned.addEventListener("click", (e) => {
   } else if (e.target.closest(".audio")) {
     if (tab) browser.tabs.update(tab.id, { muted: !tab.mutedInfo?.muted });
   } else {
-    ArcFox.openItem(row.dataset.item, state.windowId).then(() => schedule(true));
+    ArcFox.openItem(row.dataset.item, state.windowId).then(
+      () => schedule(true),
+      (err) => console.error("Arc: opening the pinned item failed", err)
+    );
   }
 });
 

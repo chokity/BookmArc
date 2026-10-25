@@ -226,8 +226,29 @@ browser.tabs.onCreated.addListener((tab) => {
  * space, where the command bar will replace it.
  */
 async function placeNewTab(tab) {
-  if (await reuseCommandBar(tab)) return;
+  // Pull it up now — a tab that appears at the bottom and jumps is worse than
+  // one that was never there — but wait before throwing it away.
   await hoistNewTab(tab);
+  await reuseIfStillBlank(tab);
+}
+
+// Long enough for a tab opened with an address to report it. A tab in a
+// container takes a moment longer than one without.
+const BLANK_GRACE_MS = 400;
+
+/**
+ * Firefox reports about:blank for a tab that was opened with an address until
+ * the load starts, so "blank" at creation doesn't mean blank: a favorite or a
+ * pinned item Arc had just opened would be thrown away as a redundant new tab,
+ * leaving the click doing nothing at all. Give the tab a moment to say where
+ * it is going, and take Arc's own mark on it as proof that it isn't spare.
+ */
+async function reuseIfStillBlank(tab) {
+  await new Promise((r) => setTimeout(r, BLANK_GRACE_MS));
+  const fresh = await browser.tabs.get(tab.id).catch(() => null);
+  if (!fresh || !(fresh.url === "about:blank" || ArcFox.isNewTabUrl(fresh.url))) return;
+  if ((await ArcFox.getTabItem(tab.id)) || (await ArcFox.getTabSpace(tab.id))) return;
+  await reuseCommandBar(fresh);
 }
 
 /** Move a tab Firefox just created to the top of its window's space. */

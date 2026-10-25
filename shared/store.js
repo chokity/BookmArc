@@ -277,13 +277,23 @@ const ArcFox = (() => {
 
   const getTabItem = (tabId) => tabValue(tabId, ITEM_VALUE);
   const getTabSpace = (tabId) => tabValue(tabId, SPACE_VALUE);
+  // A tab can be gone by the time it is marked (closed by hand, or taken for
+  // something else), and that is no reason to fail whatever opened it.
   const setTabItem = async (tabId, itemId) => {
-    await browser.sessions.setTabValue(tabId, ITEM_VALUE, itemId);
-    noteTabValue(tabId, ITEM_VALUE, itemId);
+    try {
+      await browser.sessions.setTabValue(tabId, ITEM_VALUE, itemId);
+      noteTabValue(tabId, ITEM_VALUE, itemId);
+    } catch {
+      // tab already gone
+    }
   };
   const setTabSpace = async (tabId, spaceId) => {
-    await browser.sessions.setTabValue(tabId, SPACE_VALUE, spaceId);
-    noteTabValue(tabId, SPACE_VALUE, spaceId);
+    try {
+      await browser.sessions.setTabValue(tabId, SPACE_VALUE, spaceId);
+      noteTabValue(tabId, SPACE_VALUE, spaceId);
+    } catch {
+      // tab already gone
+    }
   };
 
   async function clearTabItem(tabId) {
