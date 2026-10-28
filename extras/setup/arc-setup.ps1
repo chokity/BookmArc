@@ -1,7 +1,7 @@
 # Arc for Firefox: give Arc the whole window (Windows).
 #
 # Adds Arc's layout to the Firefox profile that has Arc installed:
-#   <profile>\chrome\userChrome.css  hides Firefox's tab strip and toolbar
+#   <profile>\chrome\userChrome.css  hides Firefox's tab strip, rounds the page
 #   <profile>\user.js                turns the stylesheet on, horizontal tabs,
 #                                    opens Arc at startup
 #   <profile>\customKeys.json        clears Firefox's Ctrl+T and Ctrl+W so Arc

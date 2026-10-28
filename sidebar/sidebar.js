@@ -1333,7 +1333,6 @@ function spaceMenu() {
         ],
       },
     { label: "Import from Arc…", run: () => newTabInSpace(browser.runtime.getURL("import/import.html")) },
-    { label: "Welcome & Setup", run: () => newTabInSpace(browser.runtime.getURL("welcome/welcome.html")) },
   ].filter(Boolean);
 }
 
