@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "Arcsidebar",
+  "name": "Arcsidebar Fork",
   "version": "0.6.9",
   "description": "Arc-style sidebar for Firefox: favorites, spaces with containers, pinned tabs and a sidebar address bar.",
   "browser_specific_settings": {

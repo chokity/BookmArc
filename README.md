@@ -2,152 +2,92 @@
   <img src="docs/logo.png" alt="" width="128" height="128">
 </p>
 
-<h1 align="center">Arcsidebar</h1>
+<h1 align="center">Arcsidebar Fork</h1>
 
-<p align="center">An Arc-style sidebar for Firefox: favorites, spaces, pinned tabs and folders, a command bar for new tabs, and an address bar in the sidebar.</p>
+<p align="center">An Arc-style sidebar for Firefox.</p>
 
-With a small one-time setup it replaces Firefox's tab strip and toolbar, so the sidebar and the page get the whole window.
+Arc is being discontinued in December 2026, so I moved to Firefox and tried to rebuild my Arc setup there as closely as I could. This is a fork of [trajche/arc](https://github.com/trajche/arc), extended with what I was missing.
+
+It's tuned to **my** needs and my setup (macOS, a light theme). Some things may not work exactly right elsewhere, for example the dark theme. Use it as it is, or fork it and adapt it to yours.
 
 > Not affiliated with or endorsed by The Browser Company. “Arc” is their browser; this is an independent extension that brings its sidebar ideas to Firefox.
 
-## Features
-
-<table>
-  <tr>
-    <td width="50%" valign="top">
-      <img src="docs/features/favorites.gif" alt="Favorites" width="100%"><br>
-      <b>Favorites</b><br>
-      A grid of icons at the top. Each favorite owns one tab: click to switch to it, or reopen it if you closed it. Favorites belong to a container, like Arc's per-profile favorites.
-    </td>
-    <td width="50%" valign="top">
-      <img src="docs/features/spaces.gif" alt="Spaces" width="100%"><br>
-      <b>Spaces</b><br>
-      Separate sets of tabs with their own name, emoji and color. Switch from the footer, with a two-finger swipe, or <code>⌃1</code>–<code>⌃5</code> (<code>Alt+Shift+1</code>–<code>5</code>). A space can use its own Firefox container, so it keeps separate logins.
-    </td>
-  </tr>
-  <tr>
-    <td width="50%" valign="top">
-      <img src="docs/features/folders.gif" alt="Pinned tabs and folders" width="100%"><br>
-      <b>Pinned tabs and folders</b><br>
-      Pin tabs to a space; they stay when closed. Shift- or Command-click to select several, right-click → <i>New Folder</i>. The pinned section folds away under the space name.
-    </td>
-    <td width="50%" valign="top">
-      <img src="docs/features/command-bar.gif" alt="Command bar" width="100%"><br>
-      <b>Command bar</b><br>
-      <code>⌘T</code> / <code>Ctrl+T</code> opens a search box instead of a blank page: addresses, searches, open tabs, history.
-    </td>
-  </tr>
-  <tr>
-    <td width="50%" valign="top">
-      <img src="docs/features/address-bar.gif" alt="Address bar in the sidebar" width="100%"><br>
-      <b>Address bar in the sidebar</b><br>
-      Shows the site you're on; click to edit or search. <code>⌥⇧L</code> / <code>Alt+Shift+L</code>.
-    </td>
-    <td width="50%" valign="top">
-      <img src="docs/features/hide-sidebar.gif" alt="Hide the sidebar" width="100%"><br>
-      <b>Hide the sidebar</b><br>
-      Firefox's own sidebar toggle gives the page the whole window — the sidebar button in the toolbar,
-      <i>View → Sidebar</i>, or its shortcut. Arc's extensions row hides with it.
-    </td>
-  </tr>
-  <tr>
-    <td width="50%" valign="top">
-      <img src="docs/features/split-view.gif" alt="Split view" width="100%"><br>
-      <b>Split view</b><br>
-      Firefox's split tabs show as one row. Create and separate them with Firefox's own shortcuts (set them in <code>about:keyboard</code>).
-    </td>
-    <td width="50%" valign="top">
-      <img src="docs/features/extensions-row.gif" alt="Extensions row" width="100%"><br>
-      <b>Extensions row</b><br>
-      Your pinned extensions sit in the sidebar, under the window buttons, once the layout setup is done.
-    </td>
-  </tr>
-</table>
-
-**Import from Arc.** Brings over spaces, pinned tabs, folders and favorites. Each Arc profile becomes a Firefox container.
-
-Shortcuts can be changed in `about:addons` → ⚙ → *Manage Extension Shortcuts*.
-
 ## Install
 
-Arcsidebar needs **Firefox 155 or newer** (desktop; Firefox for Android has no sidebar).
+Needs **Firefox 155 or newer** (desktop).
 
-1. Download the latest signed `.xpi` from [Releases](https://github.com/trajche/arc/releases) and open it in Firefox. It updates itself from there (Firefox checks daily; `about:addons` → ⚙ → *Check for Updates* forces it).
-2. **Give Arc the whole window** (hides Firefox's tab strip and toolbar). Run the setup for your system — it finds the Firefox profile with Arc and adds Arc's layout, keeping any customizations you already have:
+### 1. The add-on
 
-   **macOS / Linux** (Terminal)
-   ```sh
-   curl -fsSL https://raw.githubusercontent.com/trajche/arc/main/extras/setup/arc-setup.txt | bash
-   ```
+Download the latest `.xpi` from [Releases](https://github.com/chokity/arc/releases) and drag it into a Firefox window (or `about:addons` → ⚙ → *Install Add-on From File…*). New versions are installed the same way; your spaces, pins and favorites are kept.
 
-   **Windows** (PowerShell)
-   ```powershell
-   irm https://raw.githubusercontent.com/trajche/arc/main/extras/setup/arc-setup.ps1 | iex
-   ```
+If the original Arcsidebar is installed too, disable it: both would handle `⌘T` and `⌘W`.
 
-   Then quit Firefox and open it again. Run it again after updating Arc. To remove Arc's layout: add `| bash -s -- --uninstall` on macOS/Linux, or run `& ([scriptblock]::Create((irm <url>))) -Uninstall` on Windows. The scripts are [`arc-setup.txt`](extras/setup/arc-setup.txt) and [`arc-setup.ps1`](extras/setup/arc-setup.ps1) if you'd rather read and run them yourself.
-3. Coming from Arc? Right-click the space name → **Import from Arc…**
+If the sidebar doesn't show up, open it once with `⌥⇧A` / `Alt+Shift+A` or *View → Sidebar → Arc*. Firefox remembers it from then on.
 
-The welcome page (opened on install, or right-click the space name → *Welcome & Setup*) explains the features and offers the setup script.
+### 2. The layout (`userChrome.css`)
 
-### What the setup changes
+An extension can't change Firefox's own window: hiding the tab strip and shaping the page takes a user stylesheet, `userChrome.css`, in your Firefox profile. With it:
 
-- `<profile>/chrome/userChrome.css` hides the tab strip, Firefox's sidebar launcher and panel header, and turns the toolbar into a row of extension buttons in the sidebar. Firefox's own address bar appears as a centered overlay with `⌘L` / `Ctrl+L` (needed for `about:` pages, which extensions can't open).
-- `<profile>/user.js` enables `userChrome.css`, horizontal tabs and session restore, keeps the window open when the last tab closes, and opens Arc's sidebar at startup.
-- `<profile>/user.js` also turns on Firefox's *Picture-in-Picture when switching tabs*, so a playing
-  video pops out when you leave its tab and goes back when you return, like Arc
-  (`media.videocontrols.picture-in-picture.enable-when-switching-tabs.enabled`; set it to `false` in
-  `about:config` if you'd rather it didn't).
-- `<profile>/customKeys.json` clears Firefox's built-in *New tab* and *Close tab* shortcuts. They're reserved keys, so Arc can only take `⌘T` / `Ctrl+T` (command bar) and `⌘W` / `Ctrl+W` (close tab, but a space keeps its last command bar instead of emptying) once they're cleared; any other shortcuts you've customized are kept. Undo it in `about:keyboard`.
+- Firefox's **tab strip is hidden**; the sidebar lists the tabs.
+- Firefox's **toolbar stays on top** (back, forward, reload, address bar, extension buttons), below the native title bar with the window buttons.
+- The page sits next to the sidebar as a **card with a rounded corner and a soft shadow**, like Arc.
+- The sidebar's **“Arc ×” header** is hidden.
+
+#### Option A: setup script (recommended)
+
+Quit Firefox (`⌘Q`), then run the script for your system. It finds the Firefox profile that has this add-on installed and adds the layout there; your own CSS and prefs in those files are kept (it only manages its own marked block).
+
+**macOS / Linux** (Terminal)
+```sh
+curl -fsSL https://raw.githubusercontent.com/chokity/arc/main/extras/setup/arc-setup.txt | bash
+```
+
+**Windows** (PowerShell)
+```powershell
+irm https://raw.githubusercontent.com/chokity/arc/main/extras/setup/arc-setup.ps1 | iex
+```
+
+Then start Firefox. Run the script again after updating the add-on, in case the layout changed. To read the scripts first: [`arc-setup.txt`](extras/setup/arc-setup.txt), [`arc-setup.ps1`](extras/setup/arc-setup.ps1). From a clone of this repository, `bash extras/setup/arc-setup.txt` does the same.
+
+To remove the layout again: `curl -fsSL … | bash -s -- --uninstall` on macOS/Linux, or `& ([scriptblock]::Create((irm <url>))) -Uninstall` on Windows.
+
+What the script changes in the profile:
+
+- `chrome/userChrome.css`: the layout above (from [`extras/userChrome.css`](extras/userChrome.css)).
+- `user.js` (from [`extras/user.js`](extras/user.js)):
+  - turns `userChrome.css` on (`toolkit.legacyUserProfileCustomizations.stylesheets`)
+  - horizontal tabs (`sidebar.verticalTabs = false`; their strip is hidden anyway)
+  - the native title bar (`browser.tabs.inTitlebar = 0`), which holds the window buttons once the tab strip is gone
+  - keeps the window open when its last tab closes
+  - restores the session, including the open sidebar
+  - turns on Picture-in-Picture when switching away from a playing video, like Arc
+- `prefs.js`: opens the sidebar once on a profile that has never shown it.
+- `customKeys.json`: clears Firefox's own *New Tab* and *Close Tab* shortcuts, so `⌘T` / `⌘W` reach the add-on. Undo in `about:keyboard`.
+
+#### Option B: by hand
+
+1. Open `about:support`, find **Profile Folder** and click **Open Folder** (Finder / Explorer).
+2. In that folder, create a folder named `chrome` if there isn't one.
+3. Save [`extras/userChrome.css`](extras/userChrome.css) into it as `chrome/userChrome.css`. If a `userChrome.css` is already there, append the contents instead of replacing it.
+4. Save [`extras/user.js`](extras/user.js) into the profile folder as `user.js` (or append to an existing one). At minimum, `about:config` → `toolkit.legacyUserProfileCustomizations.stylesheets` must be `true`.
+5. Restart Firefox. Changes to `userChrome.css` always need a restart.
+
+To undo: delete (or empty) `chrome/userChrome.css` and the lines you added to `user.js`, then reset the prefs in `about:config` if you like.
 
 ## Limits
 
-Firefox doesn't allow extensions to do these:
+Firefox doesn't allow extensions to:
 
 - Draw over the page. Arc's floating command bar becomes a tab here.
-- Open `about:` pages, create split views, or read Arc's saved logins and cookies.
+- Open `about:` pages (use Firefox's address bar, `⌘L` / `Ctrl+L`), create split views, or read Arc's saved logins and cookies.
 - Switch browser profiles. Containers stand in for Arc profiles: separate cookies and logins, but shared history, bookmarks and extensions.
+- Draw outside the sidebar: menus and submenus open inside it.
 
-Spaces, pins and favorites are stored locally; Firefox Sync's extension storage is too small for large Arc imports.
+Spaces, pins and favorites are stored locally in the profile.
 
 ## Tab badges for other extensions
 
-Other extensions can put small badges on tabs in the sidebar. [Tab Driver](https://github.com/trajche/tabdriver)
-uses this to tag tabs an AI agent is controlling.
-
-```js
-await browser.runtime.sendMessage("arc@sidebar", {
-  type: "arcsidebar:set-badges",
-  badges: [{ tabId: 12, label: "AI", title: "Claude is controlling this tab", color: "#7c5cff" }],
-});
-```
-
-- Each call replaces all badges from your extension. Send an empty list to clear them.
-- `label` is up to 12 characters, and `title` (the tooltip) up to 120. `color` is optional and must
-  be a hex color; the default is the space's color. At most 200 badges per extension.
-- `icon` shows a built-in [Lucide](https://lucide.dev) icon instead of the label: `"bot"` or `"sparkles"`.
-  `position: "start"` puts the badge before the title, next to the sound icon (default: after the title).
-  `pulse: true` makes it blink; on an icon, a small green dot blinks instead.
-- Badges last until Firefox restarts or Arcsidebar updates. Arcsidebar then sends
-  `{ type: "arcsidebar:ready" }` to every extension that set badges before; send yours again when
-  you get it.
-- The call fails if Arcsidebar isn't installed. Retry now and then until it succeeds.
-
-They can also add items to the tab menu (right-click on a tab in the sidebar):
-
-```js
-await browser.runtime.sendMessage("arc@sidebar", {
-  type: "arcsidebar:set-tab-menu",
-  items: [{ id: "control", title: "Let AI agents control this tab", exceptTabIds: [12] }],
-});
-// A click arrives as { type: "arcsidebar:menu-clicked", id: "control", tabId }.
-```
-
-- Each call replaces your items (up to 5). `tabIds` shows an item only on those tabs, `exceptTabIds`
-  hides it on them.
-- Items last as long as badges, and the same `arcsidebar:ready` message asks you to send them again.
-- Arcsidebar pings extensions that set badges or items (`{ type: "arcsidebar:ping" }`, no answer
-  needed) and drops what they set once they're disabled or removed.
+Other extensions can put small badges on tabs in the sidebar and add items to its tab menu, by messaging this add-on (`arc@sidebar-pliha`). See the [original README](https://github.com/trajche/arc#tab-badges-for-other-extensions) for the message format; only the add-on id differs.
 
 ## Development
 
@@ -155,29 +95,38 @@ await browser.runtime.sendMessage("arc@sidebar", {
 npm install
 npm run setup-dev   # once: creates the "arc-dev" Firefox Developer Edition profile
 npm run dev         # start Developer Edition with that profile (macOS)
-npm run reload      # reload Arc in place after changing code
+npm run reload      # reload the add-on in place after changing code
 npm run lint
 ```
 
-The dev profile loads Arc unsigned, straight from this folder, and links `extras/userChrome.css` into the profile. Code changes need `npm run reload`; `userChrome.css` changes need a Developer Edition restart. Release Firefox only runs signed add-ons.
+The dev profile loads the add-on unsigned, straight from this folder, and links `extras/userChrome.css` into the profile. Code changes need `npm run reload`; `userChrome.css` changes need a Developer Edition restart. The striped address bar with a robot icon in that window is Firefox marking remote control, which `npm run reload` uses.
+
+Release Firefox only runs signed add-ons. To sign your own build without publishing it:
+
+1. Create API keys at [addons.mozilla.org → Developer Hub → API Keys](https://addons.mozilla.org/developers/addon/api/key/) and put them in `.env` (git-ignored):
+   ```sh
+   WEB_EXT_API_KEY=user:…
+   WEB_EXT_API_SECRET=…
+   ```
+2. `npm run sign` bumps the patch version and uploads an *unlisted* build: it's signed but not listed on addons.mozilla.org. The signed `.xpi` lands in `web-ext-artifacts/`. If it times out while waiting, don't run it again (that burns the next version number); fetch the file with `node scripts/amo.mjs fetch <version> web-ext-artifacts/arc-<version>.xpi --wait-minutes 45`.
+
+Other scripts:
 
 - `npm run build:setup` regenerates `extras/setup/` from `extras/userChrome.css` and `extras/user.js`. Run it after changing either.
-- `npm run build:gifs` re-renders the feature animations (HyperFrames project in `videos/arc-feature-loops`) and slices them into `docs/features/`.
-- `npm run sign` bumps the version and signs an unlisted build with addons.mozilla.org. It reads `WEB_EXT_API_KEY` / `WEB_EXT_API_SECRET` from `.env` (git-ignored).
-- `npm run release` signs a build, publishes it as a GitHub release, and points `updates.json` at it so installed copies update themselves. Needs the `gh` CLI and a clean git tree.
+- `npm run build` packs an unsigned `.zip` (for Developer Edition / Nightly, or `about:debugging` → *Load Temporary Add-on*).
 
 | Path | What |
 |---|---|
 | `background.js` | Tab lifecycle, spaces, context menus, commands |
-| `shared/store.js` | Data: spaces, favorites, pinned items, folders, import |
-| `sidebar/` | The sidebar: tabs, address bar, spaces footer |
+| `shared/store.js` | Data: spaces, favorites, pinned items, nested folders, imports |
+| `shared/theme.css` | Color tokens, light and dark |
+| `sidebar/` | The sidebar: pinned tabs, folders, tab list, menus and dialogs, spaces footer |
 | `palette/`, `newtab/` | Command bar and the new-tab page that opens it |
 | `editor/` | Space editor window (emoji data in `emoji.json`) |
 | `import/` | Import from Arc (`arc-parse.js` reads Arc's `StorableSidebar.json`) |
-| `welcome/` | Welcome and setup page |
 | `extras/` | `userChrome.css`, `user.js` and the generated setup scripts |
-| `scripts/` | Dev tooling: setup-script generator, dev profile, reload |
+| `scripts/` | Dev tooling: setup-script generator, dev profile, reload, signing helper |
 
 ## License
 
-[MIT](LICENSE). Emoji data from [unicode-emoji-json](https://github.com/muan/unicode-emoji-json) and [emojilib](https://github.com/muan/emojilib) (MIT, see [`editor/emoji.LICENSE.txt`](editor/emoji.LICENSE.txt)).
+[MIT](LICENSE), like the original. Icons from [Lucide](https://lucide.dev) (ISC). Emoji data from [unicode-emoji-json](https://github.com/muan/unicode-emoji-json) and [emojilib](https://github.com/muan/emojilib) (MIT, see [`editor/emoji.LICENSE.txt`](editor/emoji.LICENSE.txt)).
