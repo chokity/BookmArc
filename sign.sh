@@ -7,7 +7,7 @@
 #   ./sign.sh major    major:  0.3.29 -> 1.0.0
 set -e
 cd "$(dirname "$0")"
-[ -f .env ] && . ./.env
+[ -f .env ] && { set -a; . ./.env; set +a; } # export, so web-ext sees the keys
 : "${WEB_EXT_API_KEY:?missing, set it in .env}"
 : "${WEB_EXT_API_SECRET:?missing, set it in .env}"
 

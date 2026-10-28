@@ -4,9 +4,20 @@
 
 html, body { height: 100%; }
 
+/* Row sizing, Arc's by default; "Sizing…" in the space menu overrides these. */
+:root {
+  --row-font: 14px;
+  --row-height: 36px;
+  --row-gap: 5px;
+  --indent: 16px;
+  --folder-icon: 18px;
+}
+
 body {
   margin: 0;
-  padding: 8px 8px 0;
+  /* 8px more on the right: extras/userChrome.css lays the page 8px over the
+     sidebar's edge (Arc's rounded page card). */
+  padding: 8px 16px 0 8px;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -42,10 +53,11 @@ svg { display: block; }
 
 .top { display: flex; flex-direction: column; gap: 6px; }
 
-/* Reserved for Firefox's extension buttons (see extras/userChrome.css). Keep 30px in sync. */
-.ext-slot { height: 30px; flex: none; }
+/* Firefox's own toolbar stays on top (see extras/userChrome.css): it has the
+   back/forward/reload buttons, the address bar and the extension buttons, so
+   none of the top block is needed here. */
+.top { display: none !important; }
 
-.nav-row { display: flex; justify-content: flex-end; gap: 2px; padding: 0 2px; }
 .nav-row .icon-btn { width: 28px; height: 26px; }
 
 .address {
@@ -178,19 +190,9 @@ svg { display: block; }
   transition: border-color 120ms, background 120ms;
 }
 
-.fav-hint-close {
-  position: absolute;
-  top: 4px; right: 4px;
-  width: 20px; height: 20px;
-  opacity: 0;
-  transition: opacity 120ms;
-}
-.fav-grid.empty:hover .fav-hint-close { opacity: 1; }
-.fav-hint-close svg { width: 11px; height: 11px; }
-
 .fav-drop-text { display: none; }
 
-/* Dismissed: hidden until something is dragged over the sidebar. */
+/* No favorites yet: hidden until something is dragged over the sidebar. */
 .fav-grid.collapsed { display: none; }
 body.drag-active .fav-grid.collapsed { display: flex; }
 
@@ -199,11 +201,11 @@ body.drag-active .fav-grid.empty {
   background: color-mix(in srgb, var(--space) 8%, transparent);
   color: var(--fg);
 }
-body.drag-active .fav-hint-text,
-body.drag-active .fav-hint-close { display: none; }
 body.drag-active .fav-drop-text { display: inline; }
 
-.fav-grid.drag-over { outline: 2px solid var(--space); outline-offset: 3px; border-radius: var(--radius); }
+/* Drop marks are drawn in the text color: the space color can match the
+   background (a light theme color at full intensity) and vanish. */
+.fav-grid.drag-over { outline: 2px solid var(--fg); outline-offset: 3px; border-radius: var(--radius); }
 
 .tile {
   position: relative;
@@ -227,7 +229,7 @@ body.drag-active .fav-drop-text { display: inline; }
   left: -5px; top: 15%; bottom: 15%;
   width: 2px;
   border-radius: 1px;
-  background: var(--space);
+  background: var(--fg);
 }
 .tile .icon { width: 20px; height: 20px; display: grid; place-items: center; }
 .tile img { width: 20px; height: 20px; object-fit: contain; }
@@ -269,10 +271,20 @@ body.drag-active .fav-drop-text { display: inline; }
   border-radius: 8px;
   cursor: pointer;
 }
+/* The space name sits above the scrolling list, not in it: it never scrolls
+   or bounces with the list. The list starts right under it. */
+.space-head + .scroll { margin-top: -8px; }
 .space-head:hover { background: var(--row-hover); }
 .space-head .chevron { display: grid; place-items: center; width: 16px; height: 16px; opacity: 0.7; }
 .space-head .chevron svg { width: 12px; height: 12px; transform: rotate(90deg); transition: transform 150ms ease; }
 body.pins-collapsed .space-head .chevron svg { transform: none; }
+/* Like Arc: an expanded space shows its icon where the chevron sits; the
+   chevron comes back while collapsed, and on hover to show it folds. */
+#space-icon { display: grid; place-items: center; width: 16px; height: 16px; font-size: 14px; line-height: 1; }
+#space-icon[hidden],
+body.pins-collapsed #space-icon,
+.space-head:hover #space-icon { display: none; }
+body:not(.pins-collapsed) .space-head.has-icon:not(:hover) .chevron { display: none; }
 .space-title { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .space-more { visibility: hidden; width: 24px; height: 24px; }
 .space-head:hover .space-more, .space-more:focus-visible { visibility: visible; }
@@ -280,7 +292,7 @@ body.pins-collapsed .space-head .chevron svg { transform: none; }
 /* Pinned tabs scroll on their own, so open tabs below stay in view. */
 #pinned {
   flex: none;
-  max-height: 50vh;
+  max-height: var(--pinned-height, 50vh); /* the divider can be dragged to change it */
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-width: thin;
@@ -288,6 +300,9 @@ body.pins-collapsed .space-head .chevron svg { transform: none; }
 }
 #pinned:hover, #pinned:focus-within { scrollbar-color: var(--divider) transparent; }
 body.pins-collapsed #pinned { display: none; }
+/* Open tabs not docked (the divider's pin is off): the pinned list takes all
+   the room it needs and the open tabs follow it, the whole area scrolling. */
+body.today-flow #pinned { max-height: none; overflow: visible; }
 .space-head.drag-over { background: var(--row-hover); }
 .space-emoji { font-size: 13px; }
 
@@ -303,11 +318,22 @@ body.pins-collapsed #pinned { display: none; }
 }
 .divider { flex: 1; height: 1px; background: var(--divider); }
 
-/* The links are hidden until the row is hovered, and hidden means no width:
+/* Drag the divider (docked): up and down moves where the pinned list ends. */
+body:not(.today-flow):not(.pins-collapsed) .divider-row { cursor: row-resize; }
+body:not(.today-flow):not(.pins-collapsed) .divider-row:hover .divider,
+.divider-row.resizing .divider { height: 2px; background: var(--muted); }
+.divider-row button { cursor: default; }
+
+/* The pin at the divider's left: docks the open tabs (pinned list scrolls on its own) or not. */
+.dock-btn { width: 20px; height: 20px; margin-inline-end: 6px; color: var(--muted); }
+.dock-btn svg { width: 13px; height: 13px; }
+body.today-flow .dock-btn { opacity: 0.6; }
+.dock-btn:hover { opacity: 1; }
+
+/* "Clear" is hidden until the sidebar is hovered, and hidden means no width:
    otherwise the divider stops short of an invisible label and reads as a
    half-drawn line. */
-.link-btn,
-.link-dot {
+.link-btn {
   color: var(--muted);
   font-size: 11px;
   white-space: nowrap;
@@ -317,16 +343,11 @@ body.pins-collapsed #pinned { display: none; }
   padding: 0;
   overflow: hidden;
   transition: opacity 120ms, max-width 160ms, margin-inline-start 160ms;
-}
-.link-btn {
   border: 0;
   background: none;
   cursor: pointer;
 }
-.divider-row:hover .link-btn,
-.divider-row:hover .link-dot,
-.scroll:hover .link-btn,
-.scroll:hover .link-dot {
+body:hover .link-btn {
   opacity: 1;
   max-width: 6rem;
   margin-inline-start: 6px;
@@ -338,17 +359,18 @@ body.pins-collapsed #pinned { display: none; }
   display: flex;
   align-items: center;
   gap: 10px;
-  height: 36px;
+  height: var(--row-height);
   padding: 0 10px;
   border: 0;
   border-radius: 10px;
   background: none;
   color: var(--muted);
+  font-size: var(--row-font);
   text-align: left;
   cursor: default;
 }
 .new-tab:hover { background: var(--row-hover); color: var(--fg); }
-.new-tab[hidden] { display: none; }
+.new-tab.active { background: var(--row-active); box-shadow: var(--shadow); color: var(--fg); }
 .plus { width: 16px; text-align: center; font-size: 17px; line-height: 1; }
 
 /* ---------- Rows ---------- */
@@ -370,9 +392,10 @@ body.pins-collapsed #pinned { display: none; }
   display: flex;
   align-items: center;
   gap: 10px;
-  height: 36px;
-  margin-bottom: 2px;
+  height: var(--row-height);
+  margin-bottom: var(--row-gap);
   padding: 0 6px 0 10px;
+  font-size: var(--row-font);
   border-radius: 10px;
   cursor: default;
 }
@@ -387,17 +410,33 @@ body.pins-collapsed #pinned { display: none; }
 .tab.item:not(.open) .title { color: var(--muted); }
 .tab.item:not(.open) .close { display: none; }
 
+/* A pinned tab that navigated away from its pinned page: "<icon> / <name>".
+   The icon leads back to the pinned page. */
+.tab.item.moved .title::before {
+  content: "/";
+  margin-inline-end: 6px;
+  color: var(--muted);
+  font-weight: 600;
+}
+.tab.item.moved .favicon { margin-inline-end: -4px; border-radius: 4px; cursor: pointer; }
+.tab.item.moved .favicon:hover { box-shadow: 0 0 0 3px var(--row-hover); background: var(--row-hover); }
+
 .tab.drop-before::before,
 .tab.drop-after::after {
   content: "";
   position: absolute;
+  z-index: 1;
   left: 8px; right: 8px;
   height: 2px;
   border-radius: 1px;
-  background: var(--space);
+  background: var(--fg);
+  pointer-events: none;
 }
-.tab.drop-before::before { top: -1px; }
-.tab.drop-after::after { bottom: -1px; }
+.tab.drop-before::before { top: -2px; }
+.tab.drop-after::after { bottom: -2px; }
+/* In the pinned list the line starts at the level the drop lands on. */
+#pinned .tab.drop-before::before { left: calc(8px + var(--depth, 0) * var(--indent)); }
+#pinned .tab.drop-after::after { left: calc(8px + var(--drop-depth, var(--depth, 0)) * var(--indent)); }
 
 .tab .favicon { width: 16px; height: 16px; flex: none; display: grid; place-items: center; }
 .tab .favicon img { width: 16px; height: 16px; object-fit: contain; }
@@ -559,6 +598,12 @@ body.pins-collapsed #pinned { display: none; }
 .menu button:not(:disabled):hover, .menu button:focus-visible { background: var(--space); color: #fff; outline: none; }
 .menu button.danger:not(:disabled):hover { background: #e5484d; }
 .menu hr { border: 0; height: 1px; margin: 4px 6px; background: var(--divider); }
+.menu button.has-sub { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.menu .sub-arrow { font-size: 15px; line-height: 1; transition: transform 120ms; }
+.menu button.has-sub[aria-expanded="true"] .sub-arrow { transform: rotate(90deg); }
+/* A submenu folds open in place, indented under its item. */
+.menu .submenu { margin-inline-start: 12px; padding-inline-start: 4px; border-inline-start: 1px solid var(--divider); }
+.menu .submenu[hidden] { display: none; }
 
 /* ---------- Dialog ---------- */
 
@@ -632,6 +677,27 @@ body.pins-collapsed #pinned { display: none; }
 }
 .actions button.primary { border: 0; background: var(--space); color: #fff; font-weight: 600; }
 .actions button.primary.danger { background: #e5484d; }
+.actions button.reset { margin-inline-end: auto; }
+
+/* Theme dialog: color picker and intensity slider. No dimmed backdrop, so
+   the sidebar behind it shows the color exactly as it will look. */
+.dialog:has(.theme-card, .sizing-card) { background: transparent; }
+/* Sizing sits at the bottom, so the rows it changes stay in view above it. */
+.dialog:has(.sizing-card) { align-items: flex-end; }
+.theme-card .hex-input { width: 88px; flex: none; font-variant-numeric: tabular-nums; }
+.theme-card input[type="color"] {
+  flex: 1;
+  min-width: 0;
+  height: 32px;
+  padding: 2px;
+  border: 1px solid var(--divider);
+  border-radius: 8px;
+  background: var(--field);
+}
+.theme-card input[type="range"] { width: 100%; accent-color: var(--space); }
+.range-head { display: flex; justify-content: space-between; }
+.sizing-card input[type="range"] { width: 100%; accent-color: var(--fg); }
+.range-value { color: var(--fg); font-variant-numeric: tabular-nums; }
 
 /* ---------- Split view (Firefox native) ---------- */
 
@@ -662,10 +728,43 @@ body.pins-collapsed #pinned { display: none; }
 
 .tab.folder .title { font-weight: 600; }
 .tab.folder .folder-icon { color: color-mix(in srgb, var(--space) 65%, var(--fg)); }
-.tab.folder .folder-icon svg { width: 16px; height: 16px; }
-.tab.child { padding-left: 32px; }
+.tab.folder .folder-icon,
+.tab.folder .folder-icon svg { width: var(--folder-icon); height: var(--folder-icon); }
+.tab.folder .title { flex: 1; min-width: 0; }
+.tab.folder .folder-count {
+  flex: none;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  margin-inline-end: 4px;
+  border-radius: 10px;
+  background: var(--row-hover);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 20px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.tab.folder .folder-count[hidden] { display: none; }
+.tab.folder .folder-emoji { font-size: calc(var(--folder-icon) - 3px); line-height: var(--folder-icon); }
 
-.tab .rename {
+/* "Change Icon" dialog: a grid of emoji to pick from. */
+.emoji-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(32px, 1fr)); gap: 4px; }
+.emoji-grid .emoji {
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  font-size: 17px;
+}
+.emoji-grid .emoji:hover { background: var(--row-hover); }
+.emoji-grid .emoji.selected { box-shadow: inset 0 0 0 2px var(--space); }
+.tab.child { padding-left: calc(10px + var(--depth, 1) * var(--indent)); }
+
+.tab .rename,
+.space-head .rename {
   flex: 1;
   min-width: 0;
   height: 24px;
@@ -689,8 +788,8 @@ body.pins-collapsed #pinned { display: none; }
 
 /* Drag onto the middle of a folder: drop into it. */
 .tab.drop-into {
-  background: color-mix(in srgb, var(--space) 14%, transparent);
-  box-shadow: inset 0 0 0 2px var(--space);
+  background: var(--row-hover);
+  box-shadow: inset 0 0 0 2px var(--fg);
 }
 
 /* Blank tabs (Cmd+T): same look as the "+ New Tab" row. */

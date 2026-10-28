@@ -54,8 +54,8 @@ $("state-file").addEventListener("change", async (e) => {
   }
 });
 
-const countTabs = (pins) => pins.reduce((n, x) => n + (x.type === "tab" ? 1 : x.children.length), 0);
-const countFolders = (pins) => pins.filter((x) => x.type === "folder").length;
+const countTabs = (pins) => pins.reduce((n, x) => n + (x.type === "tab" ? 1 : countTabs(x.children)), 0);
+const countFolders = (pins) => pins.reduce((n, x) => n + (x.type === "folder" ? 1 + countFolders(x.children) : 0), 0);
 const plural = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
 
 function build() {

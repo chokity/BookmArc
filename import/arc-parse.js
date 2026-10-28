@@ -57,10 +57,9 @@ export function parseArc(sidebar, localState = null) {
     return { type: "tab", url, title: o.title || o.data.tab.savedTitle || url };
   };
 
-  /** Pinned tree of a container: tabs and folders (nested folders flattened as "A / B"). */
+  /** Pinned tree of a container: tabs and folders, nested as in Arc. */
   function walk(containerId) {
-    const out = [];
-    const visit = (id, prefix, into) => {
+    const visit = (id, into) => {
       const o = items.get(id);
       if (!o?.data) return;
       if (o.data.tab) {
@@ -68,20 +67,18 @@ export function parseArc(sidebar, localState = null) {
         if (tab) into.push(tab);
         else skipped.other++;
       } else if (o.data.list) {
-        const name = prefix ? `${prefix} / ${o.title || "Folder"}` : o.title || "Folder";
-        const folder = { type: "folder", name, children: [], nested: !!prefix };
-        out.push(folder);
-        for (const child of o.childrenIds || []) visit(child, name, folder.children);
+        const folder = { type: "folder", name: o.title || "Folder", children: [] };
+        into.push(folder);
+        for (const child of o.childrenIds || []) visit(child, folder.children);
       } else if (o.data.easel || o.data.arcDocument) {
         skipped.notes++;
       } else {
         skipped.other++;
       }
     };
-    // Folders are added where they're found, so `out` keeps Arc's order.
-    // Folders that only held other folders are dropped once flattened.
-    for (const id of items.get(containerId)?.childrenIds || []) visit(id, "", out);
-    return out.filter((x) => x.type === "tab" || x.children.length || !x.nested);
+    const out = [];
+    for (const id of items.get(containerId)?.childrenIds || []) visit(id, out);
+    return out;
   }
 
   const profiles = new Map(); // key -> {key, name, spaces: n}

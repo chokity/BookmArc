@@ -125,7 +125,7 @@ export function createSpacesBar(ctx) {
               className: `space-btn${s.id === state.spaceId ? " active" : ""}`,
               title: s.name,
               dataset: { space: s.id },
-              style: { "--c": ArcFox.COLORS[s.color] || ArcFox.COLORS.blue },
+              style: { "--c": ArcFox.spaceColor(s) },
             },
             s.icon ? h("span", { className: "space-emoji" }, s.icon) : h("span", { className: "space-dot" })
           )

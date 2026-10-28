@@ -5,10 +5,16 @@
  *   favorites        [{id, url, title, icon}]          favorites of spaces without a container
  *   favorites@<cookieStoreId>                          favorites of spaces in that container
  *                    (like Arc profiles: spaces sharing a container share favorites)
- *   spaces           [{id, name, icon, color, container}]
- *   pins:<spaceId>   [{id, url, title, icon, parent?} | {id, type: "folder", name, open, parent?}]
+ *   spaces           [{id, name, icon, color, tint?, container}]
+ *                    color: a COLORS name (also the container's color);
+ *                    tint: a custom theme color (#rrggbb) that overrides it
+ *                    intensity: how much of the color the background takes (%)
+ *                    text: "dark" | "light" text color (unset: follows the system)
+ *   pins:<spaceId>   [{id, url, title, name?, icon, parent?} | {id, type: "folder", name, open, icon?, parent?}]
+ *                    an item's `name` is the user's own title for it, shown instead of `title`
  *                    pinned items + folders of one space, flat and ordered; an item's
- *                    `parent` is the id of the folder it's in
+ *                    (or folder's) `parent` is the id of the folder it's in. Folders
+ *                    nest to any depth; a folder's contents follow it in the list.
  *   Lists over the 8KB per-key quota continue in "<key>#1", "<key>#2", ...
  * storage.local
  *   faviconCache     {itemId: url}
@@ -47,6 +53,40 @@ const ArcFox = (() => {
     purple: "#af51f5",
   };
 
+  /** The color a space is painted in: its custom theme color, else its palette color. */
+  const spaceColor = (space) =>
+    /^#[0-9a-f]{6}$/i.test(space?.tint || "") ? space.tint : COLORS[space?.color] || COLORS.purple;
+
+  /** How strongly a space's color tints the background (%), or null for the theme's default. */
+  const spaceIntensity = (space) =>
+    Number.isFinite(space?.intensity) ? Math.min(MAX_INTENSITY, Math.max(0, space.intensity)) : null;
+  const MAX_INTENSITY = 100;
+
+  /**
+   * Paint a page in a space's colors (--space, and --tint when the space sets
+   * an intensity), and remember them so new tabs start in the right colors.
+   */
+  function paintSpace(space) {
+    const root = document.documentElement.style;
+    const color = spaceColor(space);
+    const intensity = spaceIntensity(space);
+    const text = space?.text === "dark" || space?.text === "light" ? space.text : null;
+    root.setProperty("--space", color);
+    if (intensity === null) root.removeProperty("--tint");
+    else root.setProperty("--tint", `${intensity}%`);
+    if (text) document.documentElement.dataset.text = text;
+    else delete document.documentElement.dataset.text;
+    try {
+      localStorage.setItem("arc:space-tint", color);
+      if (intensity === null) localStorage.removeItem("arc:space-intensity");
+      else localStorage.setItem("arc:space-intensity", `${intensity}%`);
+      if (text) localStorage.setItem("arc:space-text", text);
+      else localStorage.removeItem("arc:space-text");
+    } catch {
+      // no storage here: new tabs just start on the default color
+    }
+  }
+
   const DEFAULT_SPACE = { id: "default", name: "Personal", icon: "", color: "purple", container: null };
 
   const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -68,6 +108,23 @@ const ArcFox = (() => {
 
   const isFolder = (item) => item?.type === "folder";
 
+  /** Ids of everything inside folder `folderId`, at any depth. */
+  function descendantIds(list, folderId) {
+    const ids = new Set([folderId]);
+    let grew = true;
+    while (grew) {
+      grew = false;
+      for (const i of list) {
+        if (i.parent && ids.has(i.parent) && !ids.has(i.id)) {
+          ids.add(i.id);
+          grew = true;
+        }
+      }
+    }
+    ids.delete(folderId);
+    return ids;
+  }
+
   function insertBefore(list, item, beforeId) {
     const at = beforeId ? list.findIndex((i) => i.id === beforeId) : -1;
     if (at >= 0) list.splice(at, 0, item);
@@ -77,9 +134,10 @@ const ArcFox = (() => {
   /** Insert before `beforeId`, else at the end of folder `parent`, else at the end. */
   function insertInto(list, item, beforeId, parent) {
     if (beforeId || !parent) return insertBefore(list, item, beforeId);
+    const inside = descendantIds(list, parent);
     let at = -1;
     list.forEach((x, i) => {
-      if (x.id === parent || x.parent === parent) at = i;
+      if (x.id === parent || inside.has(x.id)) at = i;
     });
     list.splice(at + 1, 0, item);
   }
@@ -632,7 +690,7 @@ const ArcFox = (() => {
   /**
    * Add imported spaces, their pinned items/folders, and favorites in one write.
    * spaces: [{name, icon, color, container, ownContainer,
-   *           pins: [{type: "tab", url, title} | {type: "folder", name, children: [tab]}]}]
+   *           pins: [{type: "tab", url, title} | {type: "folder", name, children: [tab | folder]}]}]
    * favorites: [{url, title, container}] (container null = no container)
    * replace: drop the current spaces, pins and favorites first (re-importing).
    * If the current setup is still the untouched default (one empty space, no
@@ -658,13 +716,13 @@ const ArcFox = (() => {
       const id = uid();
       newSpaces.push({ id, name: sp.name, icon: sp.icon || "", color: sp.color, container: sp.container || null, ownContainer: !!sp.ownContainer });
       const list = [];
-      for (const x of sp.pins) {
-        if (x.type === "tab") list.push(item(x));
-        else {
-          const folder = { id: uid(), type: "folder", name: x.name, open: false };
-          list.push(folder, ...x.children.map((c) => item(c, folder.id)));
-        }
-      }
+      const add = (x, parent) => {
+        if (x.type === "tab") return list.push(item(x, parent));
+        const folder = { id: uid(), type: "folder", name: x.name, open: false, ...(parent ? { parent } : {}) };
+        list.push(folder);
+        for (const c of x.children) add(c, folder.id);
+      };
+      for (const x of sp.pins) add(x, null);
       count += list.filter((i) => !isFolder(i)).length;
       writes[pinKey(id)] = list;
     }
@@ -692,6 +750,36 @@ const ArcFox = (() => {
     }
     notify();
     return { spaces: newSpaces.length, pins: count, favorites: addedFavs, replacedDefault: pristine };
+  }
+
+  /**
+   * Add a tree of pinned items and folders to the end of a space's pinned
+   * list (bookmarks import). tree: [{type: "tab", url, title} | {type: "folder", name, children: tree}]
+   * Only web addresses are kept. Returns {pins, folders} added.
+   */
+  async function importPins(spaceId, tree) {
+    const state = await getState();
+    const key = pinKey(spaceId);
+    const list = listFor(state, key).slice();
+    let pins = 0;
+    let folders = 0;
+    const add = (x, parent) => {
+      const at = parent ? { parent } : {};
+      if (x.type === "tab") {
+        if (!isFavoritable(x.url)) return;
+        list.push({ id: uid(), url: x.url, title: x.title || x.url, icon: guessIcon(x.url), ...at });
+        pins++;
+        return;
+      }
+      const folder = { id: uid(), type: "folder", name: x.name || "Folder", open: false, ...at };
+      list.push(folder);
+      folders++;
+      for (const c of x.children) add(c, folder.id);
+    };
+    for (const x of tree) add(x, null);
+    await writeList(key, list);
+    notify();
+    return { pins, folders };
   }
 
   /* ---------- Favorites & pinned items ---------- */
@@ -743,28 +831,31 @@ const ArcFox = (() => {
   /**
    * Reorder an item, move it between favorites and a space's pinned list, or
    * in/out of a folder (`parent`: folder id, or null for top level).
-   * Folders only live in pinned lists and don't nest.
+   * Folders only live in pinned lists; they can go into other folders, but
+   * not into themselves or anything inside them.
    */
   async function moveItem(itemId, toKey, beforeId = null, { parent = null } = {}) {
     const state = await getState();
     const found = findItem(state, itemId);
     if (!found || itemId === beforeId) return;
-    if (isFolder(found.item) && (isFavKey(toKey) || parent)) return;
+    if (isFolder(found.item) && isFavKey(toKey)) return;
+    // A folder carries everything inside it along, wherever it goes.
+    const inside = isFolder(found.item) ? descendantIds(found.list, itemId) : new Set();
+    if (parent === itemId || inside.has(parent) || inside.has(beforeId)) return;
     const item = { ...found.item };
     if (parent && !isFavKey(toKey)) item.parent = parent;
     else delete item.parent;
-    const from = found.list.filter((i) => i.id !== itemId);
-    // A folder carries its items along when it moves to another space.
-    const children = isFolder(item) && found.key !== toKey ? from.filter((i) => i.parent === itemId) : [];
-    const fromRest = children.length ? from.filter((i) => i.parent !== itemId) : from;
+    const children = found.list.filter((i) => inside.has(i.id));
+    const from = found.list.filter((i) => i.id !== itemId && !inside.has(i.id));
     if (found.key === toKey) {
       insertInto(from, item, beforeId, item.parent);
+      from.splice(from.indexOf(item) + 1, 0, ...children);
       await writeList(toKey, from);
     } else {
       const to = listFor(state, toKey).slice();
       insertInto(to, item, beforeId, item.parent);
       to.splice(to.indexOf(item) + 1, 0, ...children);
-      await writeLists({ [found.key]: fromRest, [toKey]: to });
+      await writeLists({ [found.key]: from, [toKey]: to });
       const spaceId = spaceOfKey(toKey);
       const tab = spaceId && (await findBoundTab(state, itemId));
       if (tab) await setTabSpace(tab.id, spaceId);
@@ -814,23 +905,46 @@ const ArcFox = (() => {
     await cacheIcon(itemId, tab.favIconUrl);
   }
 
+  /**
+   * Give a favorite or pinned item its own name, shown instead of its page
+   * title; an empty name goes back to the page title.
+   */
+  async function renameItem(itemId, name) {
+    const state = await getState();
+    const found = findItem(state, itemId);
+    if (!found || isFolder(found.item)) return;
+    const rename = (i) => {
+      if (i.id !== itemId) return i;
+      const { name: _old, ...rest } = i;
+      return name ? { ...rest, name } : rest;
+    };
+    await writeList(found.key, found.list.map(rename));
+    notify();
+  }
+
   /* ---------- Folders (pinned section) ---------- */
 
   /**
-   * New folder in a space's pinned list holding existing pinned items
-   * (`itemIds`) and/or open tabs (`tabIds`, pinned on the way in). It takes the
-   * place of the first selected pinned item, or goes to the end.
+   * New folder in a space's pinned list holding existing pinned items and
+   * folders (`itemIds`) and/or open tabs (`tabIds`, pinned on the way in). It
+   * takes the place of the first selected pinned item, or goes to the end of
+   * folder `parent` (top level if null).
    */
-  async function createFolder(spaceId, { name = "New Folder", itemIds = [], tabIds = [] } = {}) {
+  async function createFolder(spaceId, { name = "New Folder", itemIds = [], tabIds = [], parent = null } = {}) {
     const state = await getState();
     const key = pinKey(spaceId);
     const list = listFor(state, key).slice();
-    const folder = { id: uid(), type: "folder", name, open: true };
-    const picked = new Set(itemIds);
-    const moved = list.filter((i) => picked.has(i.id) && !isFolder(i));
+    const picked = new Set(itemIds.filter((id) => list.some((i) => i.id === id)));
+    // Picked folders bring their contents; anything already inside a picked folder stays where it is in there.
+    const nested = new Set();
+    for (const id of picked) for (const d of descendantIds(list, id)) nested.add(d);
+    const top = list.filter((i) => picked.has(i.id) && !nested.has(i.id));
+    const moved = list.filter((i) => picked.has(i.id) || nested.has(i.id));
     const firstAt = list.findIndex((i) => moved.includes(i));
+    const folderParent = top.length ? top[0].parent : parent;
+    const folder = { id: uid(), type: "folder", name, open: true, ...(folderParent ? { parent: folderParent } : {}) };
     const rest = list.filter((i) => !moved.includes(i));
-    const inside = moved.map((i) => ({ ...i, parent: folder.id }));
+    const inside = moved.map((i) => (top.includes(i) ? { ...i, parent: folder.id } : i));
 
     // Tabs: reuse their existing item if they already have one, else pin them.
     for (const tabId of tabIds) {
@@ -844,9 +958,15 @@ const ArcFox = (() => {
       await setTabSpace(tab.id, spaceId);
       await cacheIcon(item.id, tab.favIconUrl);
     }
-    const at = firstAt >= 0 ? rest.indexOf(list.slice(firstAt).find((i) => rest.includes(i))) : -1;
-    if (at >= 0) rest.splice(at, 0, folder, ...inside);
-    else rest.push(folder, ...inside);
+    if (firstAt >= 0) {
+      const next = list.slice(firstAt).find((i) => rest.includes(i));
+      const at = next ? rest.indexOf(next) : -1;
+      if (at >= 0) rest.splice(at, 0, folder, ...inside);
+      else rest.push(folder, ...inside);
+    } else {
+      insertInto(rest, folder, null, folder.parent);
+      rest.splice(rest.indexOf(folder) + 1, 0, ...inside);
+    }
     await writeList(key, rest);
     notify();
     return folder;
@@ -861,16 +981,19 @@ const ArcFox = (() => {
     notify();
   }
 
-  /** Remove a folder; its items move to the top level (keepItems) or are removed too. */
+  /**
+   * Remove a folder; its contents move up a level into the folder's own
+   * parent (keepItems), or are removed too, subfolders and all.
+   */
   async function deleteFolder(folderId, { keepItems = true } = {}) {
     const state = await getState();
     const found = findItem(state, folderId);
     if (!found || !isFolder(found.item)) return;
-    const children = found.list.filter((i) => i.parent === folderId);
+    const inside = descendantIds(found.list, folderId);
     if (!keepItems) {
       const tabs = await browser.tabs.query({});
       const { bound } = await scanTabs(tabs, state);
-      for (const child of children) {
+      for (const child of found.list.filter((i) => inside.has(i.id))) {
         const tab = bound.get(child.id);
         if (tab) {
           await clearTabItem(tab.id);
@@ -879,12 +1002,13 @@ const ArcFox = (() => {
         await dropIcon(child.id);
       }
     }
+    const up = found.item.parent;
     const list = found.list
-      .filter((i) => i.id !== folderId && (keepItems || i.parent !== folderId))
+      .filter((i) => i.id !== folderId && (keepItems || !inside.has(i.id)))
       .map((i) => {
         if (i.parent !== folderId) return i;
         const { parent, ...rest } = i;
-        return rest;
+        return up ? { ...rest, parent: up } : rest;
       });
     await writeList(found.key, list);
     notify();
@@ -1064,6 +1188,10 @@ const ArcFox = (() => {
     PIN_PREFIX,
     ICON_KEY,
     COLORS,
+    spaceColor,
+    spaceIntensity,
+    paintSpace,
+    MAX_INTENSITY,
     pinKey,
     isFavoritable,
     isNewTabUrl,
@@ -1102,6 +1230,9 @@ const ArcFox = (() => {
     resetItem,
     saveCurrentUrl,
     isFolder,
+    renameItem,
+    importPins,
+    descendantIds,
     createFolder,
     updateFolder,
     deleteFolder,

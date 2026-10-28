@@ -4,7 +4,7 @@
 # Injected verbatim into the setup scripts by scripts/build-setup.mjs.
 $prefsPath = Join-Path $target.FullName "prefs.js"
 if (-not $Uninstall -and (Test-Path $prefsPath) -and -not ((Get-Content $prefsPath -Raw) -match 'sidebar\.backupState')) {
-  $seed = 'user_pref("sidebar.backupState", "{\"command\":\"arc_sidebar-sidebar-action\",\"panelOpen\":true,\"launcherVisible\":false,\"launcherExpanded\":false}");'
+  $seed = 'user_pref("sidebar.backupState", "{\"command\":\"arc_sidebar-pliha-sidebar-action\",\"panelOpen\":true,\"launcherVisible\":false,\"launcherExpanded\":false}");'
   Add-Content $prefsPath $seed
   Write-Host "Seeded sidebar.backupState so Arc's panel opens; Firefox keeps its width from now on."
 }

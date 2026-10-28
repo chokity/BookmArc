@@ -3,7 +3,7 @@
 import { connect } from "../node_modules/web-ext/lib/firefox/remote.js";
 
 const PORT = Number(process.env.ARC_DEBUG_PORT || 6005);
-const ADDON_ID = "arc@sidebar";
+const ADDON_ID = "arc@sidebar-pliha";
 
 try {
   const firefox = await connect(PORT);

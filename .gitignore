@@ -11,3 +11,4 @@ videos/*/renders/
 videos/*/snapshots/
 videos/*/node_modules/
 videos/*/.media/
+/.idea/
