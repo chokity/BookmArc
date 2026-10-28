@@ -313,13 +313,7 @@ const ready = (async () => {
   const state = await ArcFox.getState();
   const spaceId = await ArcFox.getWindowSpace(windowId, state);
   const space = state.spaces.find((x) => x.id === spaceId);
-  const tint = ArcFox.COLORS[space.color] || ArcFox.COLORS.purple;
-  document.documentElement.style.setProperty("--space", tint);
-  try {
-    localStorage.setItem("arc:space-tint", tint);
-  } catch {
-    // nothing to cache with: the next new tab just starts on the default
-  }
+  ArcFox.paintSpace(space);
 
   // The engine name only fills in the "Search <engine>" hint.
   engine = await engineName();

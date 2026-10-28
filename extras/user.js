@@ -5,6 +5,8 @@
 user_pref("toolkit.legacyUserProfileCustomizations.stylesheets", true);
 // Horizontal tabs (their strip is hidden; ArcFox lists the tabs).
 user_pref("sidebar.verticalTabs", false);
+// Native title bar: it holds the window buttons once the tab strip is hidden.
+user_pref("browser.tabs.inTitlebar", 0);
 // Closing the last tab keeps the window (with a new tab), like Arc.
 user_pref("browser.tabs.closeWindowWithLastTab", false);
 // A video pops out into Picture-in-Picture when you leave its tab, and goes back

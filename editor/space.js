@@ -190,6 +190,7 @@ async function save(e) {
     name,
     icon: draft.icon,
     color: draft.color,
+    ...(space && space.color !== draft.color ? { tint: "" } : {}),
     container,
     ownContainer,
   });

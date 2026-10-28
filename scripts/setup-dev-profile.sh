@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Create the "arc-dev" Firefox Developer Edition profile used for development:
-#   - Arc loads unsigned, straight from this repo (extensions/arc@sidebar
+#   - Arc loads unsigned, straight from this repo (extensions/arc@sidebar-pliha
 #     is a proxy file containing the repo path)
 #   - chrome/userChrome.css is a symlink to extras/userChrome.css
 #   - user.js = extras/user.js + dev prefs (unsigned add-ons, local remote
@@ -29,7 +29,7 @@ if [ ! -f "$PROFILE/times.json" ]; then
 fi
 mkdir -p "$PROFILE/chrome" "$PROFILE/extensions"
 
-printf '%s\n' "$REPO" > "$PROFILE/extensions/arc@sidebar"
+printf '%s\n' "$REPO" > "$PROFILE/extensions/arc@sidebar-pliha"
 ln -sf "$REPO/extras/userChrome.css" "$PROFILE/chrome/userChrome.css"
 
 {
@@ -37,7 +37,7 @@ ln -sf "$REPO/extras/userChrome.css" "$PROFILE/chrome/userChrome.css"
   cat <<'EOF'
 
 // ---- Arc development profile ----
-// Load Arc unsigned, straight from the repo (extensions/arc@sidebar).
+// Load Arc unsigned, straight from the repo (extensions/arc@sidebar-pliha).
 user_pref("xpinstall.signatures.required", false);
 user_pref("extensions.autoDisableScopes", 0);
 // Local-only remote debugging, used by `npm run reload`.

@@ -12,33 +12,69 @@ export function hideMenu() {
   menuEl.replaceChildren();
 }
 
-/** items: [{label, run, danger?, disabled?} | "-"]; `after` runs once an item finishes. */
-export function showMenu(items, x, y, after = () => {}) {
-  const nodes = items.map((item) =>
-    item === "-"
-      ? h("hr")
-      : h(
-          "button",
-          {
-            className: item.danger ? "danger" : "",
-            disabled: !!item.disabled,
-            onclick: async () => {
-              hideMenu();
-              try {
-                await item.run();
-              } finally {
-                after();
-              }
-            },
+function menuNodes(items, after) {
+  return items.flatMap((item) => {
+    if (item === "-") return [h("hr")];
+    if (item.submenu) {
+      // The sidebar is too narrow for a submenu beside the menu, so it folds
+      // open inside it: the items appear indented below their parent.
+      const group = h("div", { className: "submenu", role: "group", hidden: true }, menuNodes(item.submenu, after));
+      const head = h(
+        "button",
+        {
+          className: "has-sub",
+          disabled: !!item.disabled,
+          "aria-expanded": "false",
+          onclick: () => {
+            group.hidden = !group.hidden;
+            head.setAttribute("aria-expanded", String(!group.hidden));
+            if (!group.hidden) group.querySelector("button:not(:disabled)")?.focus();
+            fitMenu();
           },
-          item.label
-        )
-  );
-  menuEl.replaceChildren(...nodes);
+        },
+        h("span", {}, item.label),
+        h("span", { className: "sub-arrow", "aria-hidden": "true" }, "›")
+      );
+      return [head, group];
+    }
+    return [
+      h(
+        "button",
+        {
+          className: item.danger ? "danger" : "",
+          disabled: !!item.disabled,
+          onclick: async () => {
+            hideMenu();
+            try {
+              await item.run();
+            } finally {
+              after();
+            }
+          },
+        },
+        item.label
+      ),
+    ];
+  });
+}
+
+/** Keep the menu on screen (again after a submenu folds open and it grows). */
+function fitMenu() {
+  const { left, top, width, height } = menuEl.getBoundingClientRect();
+  menuEl.style.left = `${Math.max(4, Math.min(left, innerWidth - width - 4))}px`;
+  menuEl.style.top = `${Math.max(4, Math.min(top, innerHeight - height - 4))}px`;
+}
+
+/**
+ * items: [{label, run, danger?, disabled?} | {label, submenu: items} | "-"];
+ * `after` runs once an item finishes.
+ */
+export function showMenu(items, x, y, after = () => {}) {
+  menuEl.replaceChildren(...menuNodes(items, after));
   menuEl.hidden = false;
-  const { width, height } = menuEl.getBoundingClientRect();
-  menuEl.style.left = `${Math.max(4, Math.min(x, innerWidth - width - 4))}px`;
-  menuEl.style.top = `${Math.max(4, Math.min(y, innerHeight - height - 4))}px`;
+  menuEl.style.left = `${x}px`;
+  menuEl.style.top = `${y}px`;
+  fitMenu();
   menuEl.querySelector("button:not(:disabled)")?.focus();
 }
 

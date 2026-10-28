@@ -14,7 +14,7 @@
 param([switch]$Uninstall)
 $ErrorActionPreference = "Stop"
 
-$AddonId = "arc@sidebar"
+$AddonId = "arc@sidebar-pliha"
 $CssBegin = "/* >>> Arc for Firefox >>> */"
 $CssEnd = "/* <<< Arc for Firefox <<< */"
 $JsBegin = "// >>> Arc for Firefox >>>"
@@ -64,17 +64,15 @@ function Write-Block($path, $begin, $end, $content) {
 
 $css = @'
 /*
- * ArcFox layout for Firefox. Always on: ArcFox's sidebar replaces the tab strip
- * and toolbar. Firefox's pinned extension buttons (+ extensions and main menu
- * buttons) become a row of tiles in the sidebar, above the ArcFox address bar.
+ * ArcFox layout for Firefox. Always on: ArcFox's sidebar replaces the tab strip.
+ * Firefox's toolbar (back/forward, address bar, extension buttons) stays on top,
+ * and the window keeps its native title bar (browser.tabs.inTitlebar = 0 in
+ * extras/user.js) for the window buttons.
  *
  * Setup (pair with extras/user.js, which also opens ArcFox at startup):
  *   1. about:support -> Profile Folder -> Open. Create a "chrome" folder there.
  *   2. Copy this file into it as chrome/userChrome.css.
  *   3. Copy extras/user.js into the profile folder, then restart Firefox.
- * Which extensions show: pin/unpin them via the puzzle-piece menu.
- * Tip: remap ArcFox's "Focus the address bar" to Cmd/Ctrl+L in
- *      about:addons -> gear -> Manage Extension Shortcuts.
  */
 
 :root {
@@ -82,25 +80,6 @@ $css = @'
   --arcfox-sidebar-width: 260px;
   --arcfox-sidebar-min: 180px;
   --arcfox-sidebar-max: 620px;
-  /* Draggable title-bar patch at the sidebar's top-left (window buttons).
-     The width is the fallback; where anchor positioning works the patch spans
-     the sidebar minus --arcfox-nav-row, the space Arc's nav buttons take. */
-  --arcfox-titlebar-width: 150px;
-  --arcfox-nav-row: 104px;
-  /* Must match ArcFox's layout: row starts 40px into the sidebar, 30px tall. */
-  --arcfox-ext-top: 40px;
-  --arcfox-ext-height: 30px;
-  --arcfox-ext-tile: rgba(255, 255, 255, 0.22);
-  --arcfox-ext-hover: rgba(0, 0, 0, 0.06);
-  --arcfox-ext-active: rgba(0, 0, 0, 0.1);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --arcfox-ext-tile: rgba(255, 255, 255, 0.06);
-    --arcfox-ext-hover: rgba(255, 255, 255, 0.11);
-    --arcfox-ext-active: rgba(255, 255, 255, 0.16);
-  }
 }
 
 /* ---------- Arc's background, for Firefox's own panels ---------- */
@@ -210,28 +189,16 @@ $css = @'
   }
 }
 
-/* What's left of the tab strip: a transparent patch in the sidebar's empty
-   top-left corner (Arc's nav buttons sit on the right). It keeps the macOS
-   window buttons, window dragging and double-click to zoom. The tabs stay
-   hidden; Arc lists them. */
-#TabsToolbar {
-  position: fixed !important;
-  z-index: 4 !important;
-  top: 0 !important;
-  left: 0 !important;
-  width: var(--arcfox-titlebar-width) !important;
-  height: var(--arcfox-ext-top) !important;
-  min-height: 0 !important;
-  margin: 0 !important;
-  border: 0 !important;
-  /* Firefox builds the window's drag region out of what the patch paints, so a
-     fully transparent background leaves nothing to grab. The lowest alpha that
-     still paints (1/255) is invisible and drags. */
-  background: rgba(0, 0, 0, 0.004) !important;
-  -moz-window-dragging: drag !important;
+/* Newer Firefox puts the panel header in the browser window, right above the
+   panel: hide it while the sidebar shows Arc's panel. */
+#sidebar-box:has(> .sidebar-browser-stack > #sidebar[src*="webext-panels"]) > #sidebar-panel-header {
+  visibility: collapse !important;
+  display: none !important;
 }
-#TabsToolbar > .toolbar-items,
-#TabsToolbar .private-browsing-indicator-with-label {
+
+/* The tab strip: Arc lists the tabs. The window buttons live in the native
+   title bar (browser.tabs.inTitlebar = 0), so the whole strip can go. */
+#TabsToolbar {
   visibility: collapse !important;
 }
 
@@ -253,6 +220,21 @@ $css = @'
   margin: 0 !important;
 }
 
+/* Arc's page card: while the sidebar is open, the page gets a rounded top-left
+   corner and a soft shadow falling onto the sidebar. The sidebar reaches 8px
+   under the page (its own padding), so the rounded corner shows the sidebar's
+   real color, custom theme colors included. */
+#main-window:has(#sidebar-box:not([hidden])) #sidebar-box {
+  margin-inline-end: -8px !important;
+}
+#main-window:has(#sidebar-box:not([hidden])) #tabbrowser-tabbox {
+  position: relative !important;
+  z-index: 1 !important;
+  border-radius: 8px 0 0 0 !important;
+  overflow: clip !important;
+  box-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.14), 0 1px 8px rgba(0, 0, 0, 0.16) !important;
+}
+
 /* Firefox leaves a gap under the sidebar (padding-block-end); Arc fills it. */
 #sidebar-box,
 #sidebar-container,
@@ -266,7 +248,7 @@ $css = @'
   --chrome-content-separator-color: transparent !important;
 }
 
-/* Fixed width so the extensions row lines up with the sidebar. */
+/* Starting width and limits for Arc's panel. */
 #sidebar-box {
   width: var(--arcfox-sidebar-width);
   min-width: var(--arcfox-sidebar-min) !important;
@@ -275,166 +257,17 @@ $css = @'
 
 /* ---------- Firefox's own sidebar panels ---------- */
 
-/* Arc's layout is made for Arc's panel (which Firefox loads as
-   webext-panels.xhtml). When the sidebar shows one of Firefox's panels
-   instead, hand the space back: the extensions row would sit on the panel's
-   search field, the window buttons would cover its first row, and Arc's
-   narrow width crops the AI chat. */
-#main-window:has(#sidebar[src]:not([src*="webext-panels"]):not([src="about:blank"])) {
-  --arcfox-native-panel: 1;
-}
-#main-window:has(#sidebar[src]:not([src*="webext-panels"]):not([src="about:blank"])) #nav-bar {
-  display: none !important;
-}
+/* When the sidebar shows one of Firefox's panels instead of Arc's (which
+   Firefox loads as webext-panels.xhtml): same width as Arc's own panel (drag
+   the edge to change both). Firefox asks for 400px for the AI chat; Arc's
+   width wins. */
 #main-window:has(#sidebar[src]:not([src*="webext-panels"]):not([src="about:blank"])) #sidebar-box {
-  /* Same width as Arc's own panel (drag the edge to change both). Firefox
-     asks for 400px for the AI chat; Arc's width wins. */
   min-width: var(--arcfox-sidebar-min) !important;
-  padding-block-start: var(--arcfox-ext-top) !important;
 }
 
 /* Arc's own small windows (command bar, space editor) are popups: no toolbar. */
 #main-window[chromehidden~="toolbar"] #nav-bar {
   display: none !important;
-}
-
-/* ---------- Toolbar -> extensions row inside the sidebar ---------- */
-
-/* Sidebar closed (Firefox's own toggle): the page goes full width and the
-   extensions row goes with it. */
-#main-window:has(#sidebar-box[hidden]) #nav-bar {
-  display: none !important;
-}
-
-/* The toolbox forms its own stacking context; lift it above the sidebar. */
-#navigator-toolbox {
-  position: relative !important;
-  z-index: 10 !important;
-}
-
-#nav-bar {
-  position: fixed !important;
-  z-index: 3 !important;
-  top: var(--arcfox-ext-top) !important;
-  left: 8px !important;
-  width: calc(var(--arcfox-sidebar-width) - 16px) !important;
-  max-width: calc(100vw - 16px) !important;
-  height: var(--arcfox-ext-height) !important;
-  min-height: 0 !important;
-  margin: 0 !important;
-  padding: 0 !important;
-  border: 0 !important;
-  background: transparent !important;
-  box-shadow: none !important;
-  --toolbarbutton-outer-padding: 0px;
-  --toolbarbutton-inner-padding: 7px;
-  --toolbarbutton-border-radius: 8px;
-  --toolbarbutton-hover-background: var(--arcfox-ext-hover);
-  --toolbarbutton-active-background: var(--arcfox-ext-active);
-  --toolbar-start-end-padding: 0px;
-}
-
-/* Flatten the button group so every button is an equal tile in one row. */
-#nav-bar-customization-target {
-  display: contents !important;
-}
-
-/* Keep only extension buttons (never Arc's own), extensions menu, main menu,
-   and the (off-screen) address bar below. */
-#nav-bar-customization-target > :not(.unified-extensions-item, .webextension-browser-action, #unified-extensions-button, #urlbar-container),
-#nav-bar .webextension-browser-action[id^="arc_sidebar"],
-#nav-bar-overflow-button,
-#nav-bar > :not(#nav-bar-customization-target, #unified-extensions-button, #PanelUI-button) {
-  display: none !important;
-}
-
-#nav-bar :is(.unified-extensions-item, .webextension-browser-action),
-#unified-extensions-button,
-#PanelUI-button {
-  flex: 1 1 0 !important;
-  min-width: 0 !important;
-  margin: 0 !important;
-  margin-inline-start: 4px !important;
-  height: var(--arcfox-ext-height) !important;
-}
-#nav-bar :is(.unified-extensions-item, .webextension-browser-action, #unified-extensions-button, #PanelUI-button):not([hidden]):first-of-type {
-  margin-inline-start: 0 !important;
-}
-#PanelUI-button {
-  padding: 0 !important;
-  border: 0 !important;
-}
-
-/* The tile: stretch each button's visual box across its slot. */
-#nav-bar :is(.unified-extensions-item, .webextension-browser-action) .toolbarbutton-1,
-#unified-extensions-button,
-#PanelUI-menu-button {
-  width: 100% !important;
-  height: var(--arcfox-ext-height) !important;
-  padding: 0 !important;
-  justify-content: center !important;
-}
-#nav-bar :is(.unified-extensions-item, .webextension-browser-action) .toolbarbutton-1 > :is(.toolbarbutton-badge-stack, .toolbarbutton-icon),
-#unified-extensions-button > .toolbarbutton-icon,
-#PanelUI-menu-button > :is(.toolbarbutton-badge-stack, .toolbarbutton-icon) {
-  width: 100% !important;
-  height: var(--arcfox-ext-height) !important;
-  padding-block: calc((var(--arcfox-ext-height) - 16px) / 2) !important;
-  padding-inline: calc(50% - 8px) !important;
-  border-radius: 8px !important;
-  background-color: var(--arcfox-ext-tile);
-  justify-content: center !important;
-}
-#nav-bar .toolbarbutton-1:not([disabled]):hover > :is(.toolbarbutton-badge-stack, .toolbarbutton-icon) {
-  background-color: var(--arcfox-ext-hover) !important;
-}
-#nav-bar .toolbarbutton-1:not([disabled]):is([open], [checked], :hover:active) > :is(.toolbarbutton-badge-stack, .toolbarbutton-icon) {
-  background-color: var(--arcfox-ext-active) !important;
-}
-
-/* ---------- Firefox's address bar: hidden until Cmd/Ctrl+L ----------
-   Arc has its own address bar, but Firefox pages (about:config, ...) can only
-   be opened from Firefox's. It waits off-screen and shows as a centered bar
-   while focused. */
-#urlbar-container {
-  position: fixed !important;
-  z-index: 30 !important;
-  top: -400px !important;
-  left: 50% !important;
-  width: min(680px, 70vw) !important;
-  max-width: none !important;
-  margin: 0 !important;
-  transform: translateX(-50%);
-}
-#urlbar-container:focus-within {
-  top: 16vh !important;
-}
-#urlbar-container:focus-within #urlbar-background {
-  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.25), 0 0 0 1px rgba(0, 0, 0, 0.08) !important;
-}
-
-/* The extensions row lives in the toolbar, outside the sidebar, so it can't
-   read the sidebar's width. Where anchor positioning is available it tracks
-   the sidebar's edges exactly; otherwise it keeps its default width and the
-   row simply stays left-aligned when the sidebar is dragged wider. */
-@supports (position-anchor: --a) {
-  #sidebar-box {
-    anchor-name: --arcfox-sidebar !important;
-  }
-  /* Same for the title-bar patch: it then reaches across the sidebar, stopping
-     short of Arc's back/forward/reload buttons on the right. */
-  #TabsToolbar {
-    position-anchor: --arcfox-sidebar !important;
-    left: anchor(left) !important;
-    right: calc(anchor(right) + var(--arcfox-nav-row)) !important;
-    width: auto !important;
-  }
-  #nav-bar {
-    position-anchor: --arcfox-sidebar !important;
-    left: calc(anchor(left) + 8px) !important;
-    right: calc(anchor(right) + 8px) !important;
-    width: auto !important;
-  }
 }
 '@
 
@@ -446,6 +279,8 @@ $prefs = @'
 user_pref("toolkit.legacyUserProfileCustomizations.stylesheets", true);
 // Horizontal tabs (their strip is hidden; ArcFox lists the tabs).
 user_pref("sidebar.verticalTabs", false);
+// Native title bar: it holds the window buttons once the tab strip is hidden.
+user_pref("browser.tabs.inTitlebar", 0);
 // Closing the last tab keeps the window (with a new tab), like Arc.
 user_pref("browser.tabs.closeWindowWithLastTab", false);
 // A video pops out into Picture-in-Picture when you leave its tab, and goes back
@@ -495,7 +330,7 @@ Write-Block (Join-Path $target.FullName "user.js") $JsBegin $JsEnd $prefs
 # Injected verbatim into the setup scripts by scripts/build-setup.mjs.
 $prefsPath = Join-Path $target.FullName "prefs.js"
 if (-not $Uninstall -and (Test-Path $prefsPath) -and -not ((Get-Content $prefsPath -Raw) -match 'sidebar\.backupState')) {
-  $seed = 'user_pref("sidebar.backupState", "{\"command\":\"arc_sidebar-sidebar-action\",\"panelOpen\":true,\"launcherVisible\":false,\"launcherExpanded\":false}");'
+  $seed = 'user_pref("sidebar.backupState", "{\"command\":\"arc_sidebar-pliha-sidebar-action\",\"panelOpen\":true,\"launcherVisible\":false,\"launcherExpanded\":false}");'
   Add-Content $prefsPath $seed
   Write-Host "Seeded sidebar.backupState so Arc's panel opens; Firefox keeps its width from now on."
 }

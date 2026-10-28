@@ -6,6 +6,10 @@
   try {
     const tint = localStorage.getItem("arc:space-tint");
     if (tint) document.documentElement.style.setProperty("--space", tint);
+    const intensity = localStorage.getItem("arc:space-intensity");
+    if (intensity) document.documentElement.style.setProperty("--tint", intensity);
+    const text = localStorage.getItem("arc:space-text");
+    if (text) document.documentElement.dataset.text = text;
   } catch {
     // private window or blocked storage: the default color is fine
   }
