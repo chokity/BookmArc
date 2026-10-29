@@ -12,7 +12,7 @@ BookmArc is one sidebar, nothing more: your bookmarks toolbar as Arc's pinned ta
   <img src="docs/BookmArc_screenshot_L.png" alt="BookmArc next to a web page: bookmark folders with emoji and colors, a collapsed folder keeping its open tab in view, the open tabs and the status bar" width="400">
 </p>
 
-Arc is being discontinued in December 2026, so I moved to Firefox and rebuilt the part of Arc I used most. It started as a fork of [trajche/arc](https://github.com/trajche/arc)
+Arc is being discontinued in December 2026, so I moved to Firefox and rebuilt the part of Arc I used most. It started as a fork of [trajche/arc](https://github.com/trajche/arc). For Chrome there is [BookmArc for Chrome](https://github.com/chokity/BookmArc-for-chrome).
 
 > Not affiliated with or endorsed by The Browser Company. “Arc” is their browser; this is an independent extension that brings its sidebar ideas to Firefox.
 
