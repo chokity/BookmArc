@@ -414,6 +414,30 @@ body:hover .link-btn {
 .tab .favicon img { width: 16px; height: 16px; object-fit: contain; }
 .tab .favicon .letter { width: 16px; height: 16px; font-size: 9px; border-radius: 4px; }
 
+/* A bookmark or favorite with its tab open: a dot in the theme color, left of the
+   icon in a row, under it on a tile (like the Dock). Mixed with the text color:
+   the theme color alone can match the background and vanish. */
+:root { --open-dot: color-mix(in srgb, var(--space) 55%, var(--fg)); }
+.tab .favicon { position: relative; }
+.tab.item.open .favicon::before {
+  content: "";
+  position: absolute;
+  left: -9px; top: 50%;
+  width: 5px; height: 5px;
+  margin-top: -2.5px;
+  border-radius: 50%;
+  background: var(--open-dot);
+}
+.tile.open::after {
+  content: "";
+  position: absolute;
+  left: 50%; bottom: 5px;
+  width: 4px; height: 4px;
+  margin-left: -2px;
+  border-radius: 50%;
+  background: var(--open-dot);
+}
+
 .tab.loading .favicon::after {
   content: "";
   width: 12px; height: 12px;
