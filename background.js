@@ -49,7 +49,7 @@ const isFavoritable = (url) => /^https?:\/\//i.test(url || "");
 //   });
 // tabIds limits an item to those tabs, exceptTabIds hides it on them. A click sends
 // { type: "bookmarc:menu-clicked", id, tabId } back to that extension. Same lifetime as badges.
-// Until 0.7.0 the add-on was Arcsidebar ("arc@sidebar-pliha", messages "arcsidebar:…"); extensions
+// Until 0.7.1 the add-on was Arcsidebar ("arc@sidebar-pliha", messages "arcsidebar:…"); extensions
 // written for it need the new ID and names.
 browser.runtime.onMessageExternal.addListener((msg, sender) => {
   if (!sender.id) return;

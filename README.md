@@ -107,7 +107,7 @@ Pinned tabs are your bookmarks (synced by Firefox Sync if it's on). Favorites, t
 
 ## Tab badges for other extensions
 
-Other extensions can put small badges on tabs in the sidebar and add items to its tab menu, by messaging this add-on (`bookmarc@pliha`). See the comment above `onMessageExternal` in `background.js`, or the [original README](https://github.com/trajche/arc#tab-badges-for-other-extensions). Since 0.7.0 the message types are named `bookmarc:` instead of `arcsidebar:`, and the add-on ID is `bookmarc@pliha` instead of `arc@sidebar-pliha`.
+Other extensions can put small badges on tabs in the sidebar and add items to its tab menu, by messaging this add-on (`bookmarc@pliha`). See the comment above `onMessageExternal` in `background.js`, or the [original README](https://github.com/trajche/arc#tab-badges-for-other-extensions). Since 0.7.1 the message types are named `bookmarc:` instead of `arcsidebar:`, and the add-on ID is `bookmarc@pliha` instead of `arc@sidebar-pliha`.
 
 ## Development
 
