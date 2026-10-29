@@ -1,2 +1,2 @@
 "use strict";
-browser.runtime.sendMessage({ type: "arcfox:newtab" }).catch(() => {});
+browser.runtime.sendMessage({ type: "bookmarc:newtab" }).catch(() => {});

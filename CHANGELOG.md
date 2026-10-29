@@ -1,5 +1,52 @@
 # Changelog
 
+## 0.7.0
+
+Renamed to **BookmArc** (formerly Arcsidebar Fork), with a new icon. The
+rename goes all the way: a new add-on ID (`bookmarc@pliha`, was
+`arc@sidebar-pliha`), so Firefox treats it as a new add-on; messages from other
+extensions are named `bookmarc:…` (was `arcsidebar:…`); the layout setup is
+`bookmarc-setup.sh` / `bookmarc-setup.ps1` and marks its blocks “BookmArc”;
+the development profile is `bookmarc-dev`. One sidebar instead of spaces:
+
+- **The pinned tabs are the bookmarks toolbar**, both ways: pinning, renaming,
+  moving or unpinning in the sidebar changes the bookmarks, and changes made in
+  Firefox show up at once. Separators and smart bookmarks stay in the toolbar
+  but out of the sidebar. Folders keep their emoji and open state, and can now
+  get a **color**: a rounded area behind the folder and what's shown below it.
+- **Spaces and containers are gone**, with the space footer, space editor,
+  bookmarks import/export and the Arc import. With the new add-on ID nothing
+  is carried over from an earlier version.
+- **`⌘L` / `Ctrl+L`** opens the command bar with the current tab's address
+  selected, like Arc; what's picked there loads in that tab. Firefox's address
+  bar is a click away (or `Alt+D`). The setup script clears Firefox's own `⌘L`
+  in customKeys.json; run it again to update.
+- **Status bar** at the bottom: the number of open tabs, and **Close All**
+  (a second click confirms).
+- Unopened bookmarks and favorites look like open ones: same text color, no
+  faded icons.
+- **Search** at the top of the sidebar: bookmarks and tabs by name or address,
+  folders opened around the hits.
+- **Open tabs are matched to their bookmarks** by address on start and when the
+  sidebar opens, give or take `www.`, a trailing slash, the fragment or the
+  query.
+- A closed folder (and a folded "Bookmarks") keeps its open tabs in view; the
+  folder's tab count is gone.
+- Empty tabs (new-tab pages, the command bar) no longer show as rows; **Close
+  Empty Tabs** closes them. "+ New Tab" is a plain "+".
+- Menus: folders have a "…" button, **Close N Open Tabs** on folders and
+  favorites, Duplicate / Reload / Mute on pinned items and favorites with an
+  open tab; "Go to Tab" is gone (a click does that).
+- Theme: one for the whole sidebar, `#f3dddb` covering it by default. The
+  background is computed exactly (CSS color-mix rounded #f3dedb down to
+  #f2dedb), text on the theme color picks dark or light to stay readable.
+- Fix: two parts of the add-on writing tab bindings at once could undo each
+  other, leaving a tab unbound from its pinned row.
+- Fix: "Customize Toolbar…" was closed again and replaced by the command bar
+  when one was open.
+- `userChrome.css` paints Firefox's own panels in the new default color; run
+  the setup script again to update it.
+
 ## 0.6.7
 
 - Clicking a favorite or a pinned item works when the space has no tabs of its

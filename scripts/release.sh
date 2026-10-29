@@ -10,8 +10,8 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-REPO="trajche/arc"
-ADDON_ID="arc@sidebar"
+REPO="chokity/BookmArc"
+ADDON_ID="bookmarc@pliha"
 
 [ -z "$(git status --porcelain)" ] || { echo "Commit or stash your changes first." >&2; exit 1; }
 
@@ -31,7 +31,7 @@ else
   ./sign.sh "${1:-patch}" || echo "Signing didn't return a file; checking addons.mozilla.org."
   VERSION="$(node -p "require('./manifest.json').version")"
 fi
-RELEASE_FILE="web-ext-artifacts/arc-$VERSION.xpi"
+RELEASE_FILE="web-ext-artifacts/bookmarc-$VERSION.xpi"
 XPI="$(ls -t web-ext-artifacts/*"$VERSION"*.xpi 2>/dev/null | head -1 || true)"
 if [ -n "$XPI" ]; then
   [ "$XPI" = "$RELEASE_FILE" ] || cp -f "$XPI" "$RELEASE_FILE"
@@ -69,14 +69,14 @@ if [ -n "$DIFFERENT" ]; then
 fi
 
 TAG="v$VERSION"
-INSTALL_NOTE="Install: download \`arc-$VERSION.xpi\` below and open it in Firefox. Installed copies update themselves."
+INSTALL_NOTE="Install: download \`bookmarc-$VERSION.xpi\` below and open it in Firefox. Installed copies update themselves."
 # This version's section of CHANGELOG.md, if it has one, above the install line.
 NOTES="$(awk -v v="## $VERSION" '$0 == v { on = 1; next } on && /^## / { exit } on' CHANGELOG.md)"
 NOTES="$(printf '%s\n\n%s' "${NOTES:-}" "$INSTALL_NOTE")"
-gh release create "$TAG" "$RELEASE_FILE" --repo "$REPO" --title "Arcsidebar $VERSION" --notes "$NOTES"
+gh release create "$TAG" "$RELEASE_FILE" --repo "$REPO" --title "BookmArc $VERSION" --notes "$NOTES"
 
 HASH="sha256:$(shasum -a 256 "$RELEASE_FILE" | cut -d' ' -f1)"
-LINK="https://github.com/$REPO/releases/download/$TAG/arc-$VERSION.xpi"
+LINK="https://github.com/$REPO/releases/download/$TAG/bookmarc-$VERSION.xpi"
 
 node -e '
 const fs = require("fs");

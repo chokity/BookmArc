@@ -1,10 +1,10 @@
 /*
- * ArcFox layout for Firefox. Always on: ArcFox's sidebar replaces the tab strip.
+ * BookmArc layout for Firefox. Always on: the sidebar replaces the tab strip.
  * Firefox's toolbar (back/forward, address bar, extension buttons) stays on top,
  * and the window keeps its native title bar (browser.tabs.inTitlebar = 0 in
  * extras/user.js) for the window buttons.
  *
- * Setup (pair with extras/user.js, which also opens ArcFox at startup):
+ * Setup (pair with extras/user.js, which also opens the sidebar at startup):
  *   1. about:support -> Profile Folder -> Open. Create a "chrome" folder there.
  *   2. Copy this file into it as chrome/userChrome.css.
  *   3. Copy extras/user.js into the profile folder, then restart Firefox.
@@ -12,47 +12,35 @@
 
 :root {
   /* Starting width only: drag the edge to resize, Firefox remembers it. */
-  --arcfox-sidebar-width: 260px;
-  --arcfox-sidebar-min: 180px;
-  --arcfox-sidebar-max: 620px;
+  --bookmarc-sidebar-width: 260px;
+  --bookmarc-sidebar-min: 180px;
+  --bookmarc-sidebar-max: 620px;
 }
 
-/* ---------- Arc's background, for Firefox's own panels ---------- */
+/* ---------- The sidebar's background, for Firefox's own panels ---------- */
 
-/* Arc tints its sidebar with the current space's color. Firefox's panels are
-   chrome and can't read that, so Arc writes the color into the window title
-   as an invisible marker (background.js) and it's decoded here. Values mirror
-   shared/theme.css. */
+/* Firefox's panels (bookmarks, history, synced tabs) are chrome and can't read
+   the sidebar's theme, so they get its default: #f3dddb, covering the whole
+   background (shared/store.js). A theme color of one's own shows in the
+   sidebar itself, not around Firefox's panels. Dark mode keeps Firefox's dark
+   panels readable. */
 :root {
-  --arcfox-base: #efedf5;
-  --arcfox-tint: 16%;
-  --arcfox-space: #af51f5;
-  --arcfox-panel-bg: color-mix(in srgb, var(--arcfox-space) var(--arcfox-tint), var(--arcfox-base));
+  --bookmarc-panel-bg: #f3dddb;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --arcfox-base: #1c1a22;
-    --arcfox-tint: 12%;
+    --bookmarc-panel-bg: #1c1a22;
   }
 }
-
-#main-window[titlepreface*="\200C"] { --arcfox-space: #37adff; } /* blue */
-#main-window[titlepreface*="\200D"] { --arcfox-space: #00c79a; } /* turquoise */
-#main-window[titlepreface*="\2060"] { --arcfox-space: #51cd00; } /* green */
-#main-window[titlepreface*="\2061"] { --arcfox-space: #ffcb00; } /* yellow */
-#main-window[titlepreface*="\2062"] { --arcfox-space: #ff9f00; } /* orange */
-#main-window[titlepreface*="\2063"] { --arcfox-space: #ff613d; } /* red */
-#main-window[titlepreface*="\2064"] { --arcfox-space: #ff4bda; } /* pink */
-#main-window[titlepreface*="\FEFF"] { --arcfox-space: #af51f5; } /* purple */
 
 /* The panel area carries the color; Firefox's panels then let it through. */
 #sidebar-box,
 #sidebar {
-  background-color: var(--arcfox-panel-bg) !important;
+  background-color: var(--bookmarc-panel-bg) !important;
 }
 :root {
-  --sidebar-background-color: var(--arcfox-panel-bg) !important;
+  --sidebar-background-color: var(--bookmarc-panel-bg) !important;
 }
 
 @-moz-document url-prefix("chrome://browser/content/places/"),
@@ -72,9 +60,9 @@
   }
 }
 
-/* ---------- Firefox chrome ArcFox replaces ---------- */
+/* ---------- Firefox chrome the sidebar replaces ---------- */
 
-/* Firefox's sidebar launcher and the panel header ("Arc  x"):
+/* Firefox's sidebar launcher and the panel header ("BookmArc  x"):
    #sidebar-header in the old sidebar; #sidebar-panel-header in the new one,
    which lives inside the panel document (webext-panels.xhtml). */
 #sidebar-container,
@@ -84,8 +72,8 @@
   display: none !important;
 }
 
-/* Arc's sidebar is resizable: Firefox's splitter stays, as an invisible grab
-   strip on the edge (it draws the border Arc removed otherwise). Firefox
+/* The sidebar's sidebar is resizable: Firefox's splitter stays, as an invisible grab
+   strip on the edge (it draws the border the sidebar removed otherwise). Firefox
    remembers the width it's dragged to. */
 #sidebar-splitter {
   /* No display override: a <splitter> drags because of its own frame, and
@@ -114,7 +102,7 @@
 }
 
 /* The panel header belongs to the panel's own document, and userChrome.css
-   styles every chrome document — so hide it only in Arc's panel. Firefox's
+   styles every chrome document — so hide it only in the sidebar's panel. Firefox's
    own panels (bookmarks, history, synced tabs, AI chat) keep their title
    and close button. */
 @-moz-document url-prefix("chrome://browser/content/webext-panels.xhtml") {
@@ -125,19 +113,19 @@
 }
 
 /* Newer Firefox puts the panel header in the browser window, right above the
-   panel: hide it while the sidebar shows Arc's panel. */
+   panel: hide it while the sidebar shows the sidebar's panel. */
 #sidebar-box:has(> .sidebar-browser-stack > #sidebar[src*="webext-panels"]) > #sidebar-panel-header {
   visibility: collapse !important;
   display: none !important;
 }
 
-/* The tab strip: Arc lists the tabs. The window buttons live in the native
+/* The tab strip: the sidebar lists the tabs. The window buttons live in the native
    title bar (browser.tabs.inTitlebar = 0), so the whole strip can go. */
 #TabsToolbar {
   visibility: collapse !important;
 }
 
-/* Sharp edge between Arc and the page: Firefox rounds and shadows both the
+/* Sharp edge between the sidebar and the page: Firefox rounds and shadows both the
    sidebar panel and the content area. */
 #sidebar,
 #sidebar-box,
@@ -155,7 +143,7 @@
   margin: 0 !important;
 }
 
-/* Arc's page card: while the sidebar is open, the page gets a rounded top-left
+/* The sidebar's page card: while the sidebar is open, the page gets a rounded top-left
    corner and a soft shadow falling onto the sidebar. The sidebar reaches 8px
    under the page (its own padding), so the rounded corner shows the sidebar's
    real color, custom theme colors included. */
@@ -170,7 +158,7 @@
   box-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.14), 0 1px 8px rgba(0, 0, 0, 0.16) !important;
 }
 
-/* Firefox leaves a gap under the sidebar (padding-block-end); Arc fills it. */
+/* Firefox leaves a gap under the sidebar (padding-block-end); the sidebar fills it. */
 #sidebar-box,
 #sidebar-container,
 .sidebar-browser-stack {
@@ -183,24 +171,24 @@
   --chrome-content-separator-color: transparent !important;
 }
 
-/* Starting width and limits for Arc's panel. */
+/* Starting width and limits for the sidebar's panel. */
 #sidebar-box {
-  width: var(--arcfox-sidebar-width);
-  min-width: var(--arcfox-sidebar-min) !important;
-  max-width: var(--arcfox-sidebar-max) !important;
+  width: var(--bookmarc-sidebar-width);
+  min-width: var(--bookmarc-sidebar-min) !important;
+  max-width: var(--bookmarc-sidebar-max) !important;
 }
 
 /* ---------- Firefox's own sidebar panels ---------- */
 
-/* When the sidebar shows one of Firefox's panels instead of Arc's (which
-   Firefox loads as webext-panels.xhtml): same width as Arc's own panel (drag
-   the edge to change both). Firefox asks for 400px for the AI chat; Arc's
+/* When the sidebar shows one of Firefox's panels instead of the sidebar's (which
+   Firefox loads as webext-panels.xhtml): same width as the sidebar's own panel (drag
+   the edge to change both). Firefox asks for 400px for the AI chat; the sidebar's
    width wins. */
 #main-window:has(#sidebar[src]:not([src*="webext-panels"]):not([src="about:blank"])) #sidebar-box {
-  min-width: var(--arcfox-sidebar-min) !important;
+  min-width: var(--bookmarc-sidebar-min) !important;
 }
 
-/* Arc's own small windows (command bar, space editor) are popups: no toolbar. */
+/* The add-on's own small windows are popups: no toolbar. */
 #main-window[chromehidden~="toolbar"] #nav-bar {
   display: none !important;
 }

@@ -1,12 +1,20 @@
-/* global ArcFox */
-/* Arc-style command bar, shown as the page of a new tab (Cmd/Ctrl+T, New Tab).
-   Picking something navigates this tab; Esc closes it. */
-import { h, setIcon } from "../sidebar/dom.js";
-import { resolve, engineName, runSearch, switchToTab, suggestFor, topSiteItems } from "../sidebar/suggest.js";
+/* The command bar, shown as the page of a new tab (Cmd/Ctrl+T, the "+" in the
+   sidebar). Picking something navigates this tab; Esc closes it.
+   With Cmd/Ctrl+L it edits another tab's address instead (?edit=<tabId>&url=…):
+   picking something loads it in that tab, and the bar goes away. */
+import { h, setIcon } from "../shared/dom.js";
+import { resolve, engineName, runSearch, switchToTab, suggestFor, topSiteItems } from "../shared/suggest.js";
+import { getTheme } from "../shared/store.js";
+import { paintTheme } from "../shared/theme.js";
 
 // Filled in at startup from the tab this page lives in.
 let windowId = null;
 let ownTabId = null;
+
+const params = new URLSearchParams(location.search);
+let editTabId = Number(params.get("edit")) || null; // the tab whose address this bar edits
+/** The tab that picking something navigates. */
+const targetTab = () => editTabId ?? ownTabId;
 
 const input = document.getElementById("q");
 const scopeEl = document.getElementById("scope");
@@ -26,7 +34,6 @@ let itemsFor = "";
 let selected = 0;
 let token = 0;
 let engine = "the web";
-let container = null; // this space's container, so suggestions stay inside it
 let scope = null; // { label, host, engine } — search inside one site
 let engines = [];
 let closing = false;
@@ -91,29 +98,40 @@ function setScope(next) {
 async function runScoped(text) {
   await own;
   if (scope.engine) {
-    await browser.search.search({ query: text, engine: scope.engine, tabId: ownTabId });
+    await browser.search.search({ query: text, engine: scope.engine, tabId: targetTab() });
   } else {
-    await runSearch(ownTabId, `site:${scope.host} ${text}`);
+    await runSearch(targetTab(), `site:${scope.host} ${text}`);
   }
+  if (editTabId) await backToEdited();
 }
 
 /** Navigate this tab to `target` ({url} or {search}). */
 async function open(target) {
   if (isFirefoxPage(target.url)) {
     hint.textContent = navigator.platform.startsWith("Mac")
-      ? "Firefox pages open from Firefox\u2019s address bar: press \u2318L"
-      : "Firefox pages open from Firefox\u2019s address bar: press Ctrl+L";
+      ? "Firefox pages open from Firefox\u2019s address bar: click it"
+      : "Firefox pages open from Firefox\u2019s address bar: click it or press Alt+D";
     hint.classList.add("warn");
     throw new Error("firefox page");
   }
-  if (target.url) await browser.tabs.update(ownTabId, { url: target.url });
-  if (target.search) await runSearch(ownTabId, target.search);
+  if (target.url) await browser.tabs.update(targetTab(), { url: target.url });
+  if (target.search) await runSearch(targetTab(), target.search);
+  if (editTabId) await backToEdited();
 }
 
-/** Close this tab (Arc's "cancel"), unless it's the window's last one. */
-async function cancel() {
-  if ((await browser.tabs.query({ windowId })).length > 1) await browser.tabs.remove(ownTabId);
+/** Close this tab, unless it's the window's last one. */
+async function closeSelf() {
+  if (editTabId || (await browser.tabs.query({ windowId })).length > 1) await browser.tabs.remove(ownTabId);
 }
+
+/** An editing bar is done: back to the tab it edited, and gone. */
+async function backToEdited() {
+  await browser.tabs.update(editTabId, { active: true }).catch(() => {});
+  await browser.tabs.remove(ownTabId);
+}
+
+/** Esc: close the bar (an editing one returns to its tab). */
+const cancel = () => (editTabId ? backToEdited() : closeSelf());
 
 /** What the sidebar should show for this row while the page loads. */
 function pendingLabel(item) {
@@ -130,18 +148,18 @@ function pendingLabel(item) {
 
 async function run(item) {
   if (item?.target?.scoped) {
-    await runScoped(item.target.scoped).catch((err) => console.error("Arc: scoped search failed", err));
+    await runScoped(item.target.scoped).catch((err) => console.error("BookmArc: scoped search failed", err));
     return;
   }
   if (closing) return;
   closing = true;
   await own; // ownTabId/windowId may still be resolving
   try {
-    if (!item.tab) {
+    if (!item.tab && !editTabId) {
       const label = pendingLabel(item);
       // Tell the sidebar now: Firefox reports the new URL only once the page
       // commits, and until then the row would still read "New Tab".
-      browser.runtime.sendMessage({ type: "arcfox:navigating", tabId: ownTabId, label }).catch(() => {});
+      browser.runtime.sendMessage({ type: "bookmarc:navigating", tabId: ownTabId, label }).catch(() => {});
       // ...and say so here too: this page stays up until the new one paints.
       document.body.classList.add("busy");
       hint.textContent = item.target?.search ? `Searching ${engine}…` : `Opening ${label}…`;
@@ -150,12 +168,12 @@ async function run(item) {
     if (item.tab) {
       // Switching to an existing tab makes this blank one pointless.
       await switchToTab(item.tab, windowId);
-      await cancel();
+      await closeSelf();
     } else {
       await open(item.target);
     }
   } catch (err) {
-    if (err.message !== "firefox page") console.error("Arc: command bar action failed", err);
+    if (err.message !== "firefox page") console.error("BookmArc: command bar action failed", err);
     closing = false;
   }
 }
@@ -212,7 +230,7 @@ async function update() {
     render();
     return;
   }
-  const next = text ? await suggestFor(text, { max: 8, container }) : await topSiteItems({ max: 6 });
+  const next = text ? await suggestFor(text, { max: 8 }) : await topSiteItems({ max: 6 });
   if (mine !== token) return;
   items = next;
   itemsFor = text;
@@ -245,10 +263,12 @@ document.addEventListener("keydown", (e) => {
     if (!text) return;
     document.body.classList.add("busy");
     hint.textContent = `Searching ${scope.label}…`;
-    browser.runtime
-      .sendMessage({ type: "arcfox:navigating", tabId: ownTabId, label: `Search ${scope.label}` })
-      .catch(() => {});
-    runScoped(text).catch((err) => console.error("Arc: scoped search failed", err));
+    if (!editTabId) {
+      browser.runtime
+        .sendMessage({ type: "bookmarc:navigating", tabId: ownTabId, label: `Search ${scope.label}` })
+        .catch(() => {});
+    }
+    runScoped(text).catch((err) => console.error("BookmArc: scoped search failed", err));
   } else if (e.key === "Enter") {
     e.preventDefault();
     const text = input.value.trim();
@@ -272,14 +292,21 @@ document.addEventListener("keydown", (e) => {
 
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") cancel();
-  // The command bar is already here. Arc owns Cmd/Ctrl+T once the setup has
+  // The command bar is already here. The add-on owns Cmd/Ctrl+T once the setup has
   // cleared Firefox's own (reserved) shortcut; until then, at least keep the
-  // keypress from reaching this page's field.
-  if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === "t") {
+  // keypress from reaching this page's field. Cmd/Ctrl+L likewise.
+  if ((e.metaKey || e.ctrlKey) && !e.altKey && /^[tl]$/i.test(e.key)) {
     e.preventDefault();
     input.focus();
     input.select();
   }
+});
+
+// Cmd/Ctrl+L while this bar is open (the background page owns the shortcut).
+browser.runtime.onMessage.addListener((msg) => {
+  if (msg?.type !== "select-field" || msg.tabId !== ownTabId) return;
+  input.focus();
+  input.select();
 });
 
 // Keep the field focused whenever the page gets focus (e.g. switching back).
@@ -289,6 +316,11 @@ window.addEventListener("focus", () => {
 
 // Focus before anything else: typing must land in the field, not be lost
 // while the tab, space and search engine are looked up.
+if (editTabId) {
+  // The tab's address, selected: typing replaces it, the arrows edit it.
+  input.value = params.get("url") || "";
+  input.select();
+}
 input.focus();
 document.title = "New Tab";
 
@@ -301,19 +333,18 @@ const own = (async () => {
   const self = await browser.tabs.getCurrent();
   ownTabId = self.id;
   windowId = self.windowId;
+  // The edited tab may be gone (closed meanwhile, or this bar restored after a restart).
+  if (editTabId && !(await browser.tabs.get(editTabId).catch(() => null))) editTabId = null;
   if (document.activeElement !== input) input.focus();
   update(); // frequent sites, before the slower lookups
 })();
 
 // Typing can beat these; they only fill in the tint and the engine's name.
-const ready = (async () => {
+(async () => {
   await own;
 
-  // Tint with the space color of the window the bar belongs to.
-  const state = await ArcFox.getState();
-  const spaceId = await ArcFox.getWindowSpace(windowId, state);
-  const space = state.spaces.find((x) => x.id === spaceId);
-  ArcFox.paintSpace(space);
+  // Tint with the theme color.
+  paintTheme(await getTheme());
 
   // The engine name only fills in the "Search <engine>" hint.
   engine = await engineName();

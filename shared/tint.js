@@ -1,15 +1,18 @@
-/* Paints the space tint before the page draws. The real color comes from
-   storage (async), so without this every new tab flashes the default purple
-   first. The sidebar and the command bar keep this cache fresh; it lives in
-   the extension's own origin, shared by all of Arc's pages. */
+/* Paints the theme before the page draws. The real colors come from storage
+   (async), so without this every page would flash the default color first.
+   The side panel and the command bar keep this cache fresh (theme.js); it lives
+   in the extension's own origin, shared by all of its pages. */
 (() => {
   try {
-    const tint = localStorage.getItem("arc:space-tint");
-    if (tint) document.documentElement.style.setProperty("--space", tint);
-    const intensity = localStorage.getItem("arc:space-intensity");
-    if (intensity) document.documentElement.style.setProperty("--tint", intensity);
-    const text = localStorage.getItem("arc:space-text");
-    if (text) document.documentElement.dataset.text = text;
+    const root = document.documentElement;
+    const color = localStorage.getItem("theme:color");
+    if (color) root.style.setProperty("--space", color);
+    const intensity = localStorage.getItem("theme:intensity");
+    if (intensity) root.style.setProperty("--tint", intensity);
+    const text = localStorage.getItem("theme:text");
+    if (text) root.dataset.text = text;
+    const bg = localStorage.getItem("theme:bg");
+    if (bg) root.style.setProperty("--bg", bg);
   } catch {
     // private window or blocked storage: the default color is fine
   }

@@ -1,4 +1,4 @@
-/* DOM helpers with no page-specific dependencies (sidebar + editor). */
+/* DOM helpers with no page-specific dependencies (sidebar + command bar). */
 
 /** h("button", {className: "x", onclick}, "text", child) */
 export function h(tag, props = {}, ...children) {

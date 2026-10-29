@@ -1,10 +1,11 @@
-# Firefox's own Cmd/Ctrl+T and Cmd/Ctrl+W are reserved shortcuts, so Arc can
-# only have them once the built-in keys are cleared. An empty entry in
+# Firefox's own Cmd/Ctrl+T and Cmd/Ctrl+W are reserved shortcuts, so BookmArc can
+# only have them once the built-in keys are cleared; Cmd/Ctrl+L (focusURLBar) is
+# cleared too, so it opens the command bar instead of the address bar. An empty entry in
 # customKeys.json means "cleared"; other entries there are left alone.
 # Injected verbatim into the setup scripts by scripts/build-setup.mjs.
 # (.txt because add-on review flags .sh files.)
 KEYS="$PROFILE/customKeys.json"
-ARC_KEYS="key_newNavigatorTab key_close"
+BOOKMARC_KEYS="key_newNavigatorTab key_close focusURLBar"
 
 clear_default_key() { # $1 = key element id
   if [ ! -s "$KEYS" ] || ! grep -q '[^[:space:]{}]' "$KEYS"; then
@@ -31,6 +32,6 @@ restore_default_key() { # $1 = key element id
   rm -f "$tmp"
 }
 
-for key in $ARC_KEYS; do
+for key in $BOOKMARC_KEYS; do
   if [ "$UNINSTALL" -eq 0 ]; then clear_default_key "$key"; else restore_default_key "$key"; fi
 done

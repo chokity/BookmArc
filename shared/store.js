@@ -1,1240 +1,300 @@
-/* Shared data layer, loaded by both the background page and the sidebar.
+/* Shared data layer for the background page, the sidebar and the command bar.
  *
- * storage.local (was storage.sync until 0.4: too small for big Arc imports;
- * old sync data is copied over once and left in place as a backup)
- *   favorites        [{id, url, title, icon}]          favorites of spaces without a container
- *   favorites@<cookieStoreId>                          favorites of spaces in that container
- *                    (like Arc profiles: spaces sharing a container share favorites)
- *   spaces           [{id, name, icon, color, tint?, container}]
- *                    color: a COLORS name (also the container's color);
- *                    tint: a custom theme color (#rrggbb) that overrides it
- *                    intensity: how much of the color the background takes (%)
- *                    text: "dark" | "light" text color (unset: follows the system)
- *   pins:<spaceId>   [{id, url, title, name?, icon, parent?} | {id, type: "folder", name, open, icon?, parent?}]
- *                    an item's `name` is the user's own title for it, shown instead of `title`
- *                    pinned items + folders of one space, flat and ordered; an item's
- *                    (or folder's) `parent` is the id of the folder it's in. Folders
- *                    nest to any depth; a folder's contents follow it in the list.
- *   Lists over the 8KB per-key quota continue in "<key>#1", "<key>#2", ...
+ * The pinned tabs are Firefox's bookmarks toolbar, both ways: the sidebar reads
+ * them from there and writes every change back as bookmark operations.
+ *
  * storage.local
- *   faviconCache     {itemId: url}
- * session values (survive restarts)
- *   tab    arcfoxFav    id of the favorite / pinned item the tab belongs to
- *   tab    arcfoxSpace  space the tab lives in
- *   window arcfoxSpace  active space of the window
- *   window arcfoxLast   {spaceId: tabId} last active tab per space
+ *   favorites        [{id, url, title}]
+ *   theme            {tint?, intensity?, text?}   tint: #rrggbb; intensity: how much of it
+ *                    the background takes (%); text: "dark" | "light" (unset: the system's)
+ *   bookmarkMap      {bookmarkId: {id, open?, icon?, color?}}   the item id a bookmark stands for (so
+ *                    tabs stay bound), plus what bookmarks have no room for: a folder's open state,
+ *                    emoji and background color
+ *   faviconCache     {itemId: url}               last favicon seen for a favorite / pinned item
+ * storage.session (survives background restarts, not browser restarts)
+ *   bindings:<tabId> itemId                      the favorite / pinned item a tab belongs to
+ *
+ * Pinned items, as the sidebar sees them: a flat, ordered list of
+ *   {id, url, title, name?, parent?} | {id, type: "folder", name, open, icon?, color?, parent?}
+ * where `parent` is the id of the folder an entry is in.
  */
-"use strict";
 
-// eslint-disable-next-line no-unused-vars
-const ArcFox = (() => {
-  const FAV_KEY = "favorites";
-  const SPACES_KEY = "spaces";
-  const PIN_PREFIX = "pins:";
-  const ICON_KEY = "faviconCache";
-  const BADGES_KEY = "tabBadges"; // storage.session: { [extensionId]: [{ tabId, label, title, color }] }
-  const BADGE_PROVIDERS_KEY = "badgeProviders"; // storage.local: extensions that have set badges or menu items
-  const TAB_MENU_KEY = "tabMenus"; // storage.session: { [extensionId]: [{ id, title, tabIds, exceptTabIds }] }
-  const VISITS_KEY = "visitsByContainer"; // storage.local: { [url]: { s: [cookieStoreId], t: lastVisit } }
-  const MAX_VISITS = 4000;
-  const ITEM_VALUE = "arcfoxFav"; // name kept so bindings from 0.1.x survive
-  const SPACE_VALUE = "arcfoxSpace";
-  const LAST_VALUE = "arcfoxLast";
+const FAV_KEY = "favorites";
+const THEME_KEY = "theme";
+const BM_MAP = "bookmarkMap";
+const ICON_KEY = "faviconCache";
+const BIND_KEY = "bindings";
+const TOOLBAR_ID = "toolbar_____";
 
-  // Firefox container colors, reused for spaces so a space matches its container.
-  const COLORS = {
-    blue: "#37adff",
-    turquoise: "#00c79a",
-    green: "#51cd00",
-    yellow: "#ffcb00",
-    orange: "#ff9f00",
-    red: "#ff613d",
-    pink: "#ff4bda",
-    purple: "#af51f5",
-  };
+// Without a theme of its own the sidebar is this color, all over (no tint of the base).
+const DEFAULT_COLOR = "#f3dddb"; // what Arc draws for its #f3dedb theme
+const DEFAULT_INTENSITY = 100;
+const isHex = (v) => /^#[0-9a-f]{6}$/i.test(v || "");
 
-  /** The color a space is painted in: its custom theme color, else its palette color. */
-  const spaceColor = (space) =>
-    /^#[0-9a-f]{6}$/i.test(space?.tint || "") ? space.tint : COLORS[space?.color] || COLORS.purple;
+export const uid = () => crypto.randomUUID();
 
-  /** How strongly a space's color tints the background (%), or null for the theme's default. */
-  const spaceIntensity = (space) =>
-    Number.isFinite(space?.intensity) ? Math.min(MAX_INTENSITY, Math.max(0, space.intensity)) : null;
-  const MAX_INTENSITY = 100;
+/** The color the theme paints in. */
+export const themeColor = (theme) => (isHex(theme?.tint) ? theme.tint : DEFAULT_COLOR);
 
-  /**
-   * Paint a page in a space's colors (--space, and --tint when the space sets
-   * an intensity), and remember them so new tabs start in the right colors.
-   */
-  function paintSpace(space) {
-    const root = document.documentElement.style;
-    const color = spaceColor(space);
-    const intensity = spaceIntensity(space);
-    const text = space?.text === "dark" || space?.text === "light" ? space.text : null;
-    root.setProperty("--space", color);
-    if (intensity === null) root.removeProperty("--tint");
-    else root.setProperty("--tint", `${intensity}%`);
-    if (text) document.documentElement.dataset.text = text;
-    else delete document.documentElement.dataset.text;
-    try {
-      localStorage.setItem("arc:space-tint", color);
-      if (intensity === null) localStorage.removeItem("arc:space-intensity");
-      else localStorage.setItem("arc:space-intensity", `${intensity}%`);
-      if (text) localStorage.setItem("arc:space-text", text);
-      else localStorage.removeItem("arc:space-text");
-    } catch {
-      // no storage here: new tabs just start on the default color
-    }
-  }
+export const MAX_INTENSITY = 100;
 
-  const DEFAULT_SPACE = { id: "default", name: "Personal", icon: "", color: "purple", container: null };
+/**
+ * How strongly the color tints the background (%), or null for the CSS default.
+ * The default color covers it fully; a color of one's own starts at the CSS default.
+ */
+export const themeIntensity = (theme) => {
+  if (Number.isFinite(theme?.intensity)) return Math.min(MAX_INTENSITY, Math.max(0, theme.intensity));
+  return isHex(theme?.tint) ? null : DEFAULT_INTENSITY;
+};
 
-  const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
-  const isFavoritable = (url) => /^https?:\/\//i.test(url || "");
-  /** Firefox's blank new tab, before Arc swaps it for the command bar. */
-  const isFirefoxNewTab = (url) =>
-    url === "about:newtab" || url === "about:home" || /^moz-extension:\/\/[^/]+\/newtab\//.test(url || "");
+/** Firefox's new-tab pages, plus the add-on's own (new-tab page, command bar). */
+export const isNewTabUrl = (url) =>
+  url === "about:newtab" || url === "about:home" || /^moz-extension:\/\/[^/]+\/(newtab|palette)\//.test(url || "");
 
-  // Firefox's new-tab pages, plus Arc's own (new-tab page, full-page command bar).
-  const isNewTabUrl = (url) =>
-    url === "about:newtab" || url === "about:home" || /^moz-extension:\/\/[^/]+\/(newtab|palette)\//.test(url || "");
-  // Only short http(s) favicon URLs go to sync storage (8KB per-item quota).
-  const syncableIcon = (url) => (url && /^https?:/i.test(url) && url.length < 512 ? url : "");
-  const pinKey = (spaceId) => PIN_PREFIX + spaceId;
-  /** Favorites list of a space: per container, like Arc's per-profile favorites. */
-  const favKey = (space) => (space?.container ? `${FAV_KEY}@${space.container}` : FAV_KEY);
-  const isFavKey = (key) => key === FAV_KEY || key.startsWith(`${FAV_KEY}@`);
-  const spaceOfKey = (key) => (key.startsWith(PIN_PREFIX) ? key.slice(PIN_PREFIX.length) : null);
+// ---------- Favorites, theme, favicons ----------
 
-  const isFolder = (item) => item?.type === "folder";
+export async function getFavorites() {
+  const { [FAV_KEY]: favorites } = await browser.storage.local.get(FAV_KEY);
+  return favorites || [];
+}
 
-  /** Ids of everything inside folder `folderId`, at any depth. */
-  function descendantIds(list, folderId) {
-    const ids = new Set([folderId]);
-    let grew = true;
-    while (grew) {
-      grew = false;
-      for (const i of list) {
-        if (i.parent && ids.has(i.parent) && !ids.has(i.id)) {
-          ids.add(i.id);
-          grew = true;
-        }
+export const saveFavorites = (favorites) => browser.storage.local.set({ [FAV_KEY]: favorites });
+
+export async function getTheme() {
+  const { [THEME_KEY]: theme } = await browser.storage.local.get(THEME_KEY);
+  return theme || {};
+}
+
+export const saveTheme = (theme) => browser.storage.local.set({ [THEME_KEY]: theme });
+
+/** Firefox gives extensions no favicon of a page that isn't open: the last one seen is kept. */
+export async function getIconCache() {
+  const { [ICON_KEY]: cache } = await browser.storage.local.get(ICON_KEY);
+  return cache && typeof cache === "object" ? cache : {};
+}
+
+export async function cacheIcon(itemId, url) {
+  if (!itemId || !url || !/^(https?:|data:image\/)/i.test(url)) return;
+  const cache = await getIconCache();
+  if (cache[itemId] === url) return;
+  cache[itemId] = url;
+  await browser.storage.local.set({ [ICON_KEY]: cache });
+}
+
+// ---------- Pinned items = the bookmarks toolbar ----------
+
+async function getBmMap() {
+  const { [BM_MAP]: map } = await browser.storage.local.get(BM_MAP);
+  return map || {};
+}
+
+/** The bookmarks toolbar's folder id. */
+async function bookmarksBarId() {
+  const [toolbar] = await browser.bookmarks.get(TOOLBAR_ID).catch(() => []);
+  if (toolbar) return toolbar.id;
+  const [root] = await browser.bookmarks.getTree();
+  return root.children[0].id;
+}
+
+/**
+ * What the sidebar leaves out of the toolbar, and never moves or deletes:
+ * separators, and Firefox's smart bookmarks (place: queries like "Most Visited").
+ */
+const isHidden = (node) => node.type === "separator" || /^place:/i.test(node.url || "");
+
+/** The bookmarks toolbar as a flat pins list; bookmarks seen for the first time get item ids. */
+export async function getPins() {
+  const [root] = await browser.bookmarks.getSubTree(await bookmarksBarId()).catch(() => []);
+  if (!root) return [];
+  const map = await getBmMap();
+  let added = false;
+  const out = [];
+  const walk = (node, parent) => {
+    for (const child of node.children || []) {
+      if (isHidden(child)) continue;
+      if (!map[child.id]) {
+        // Derived from the bookmark, not random: two pages meeting a new bookmark
+        // at the same moment (the sidebar's first load and its binding of open
+        // tabs) must give it the same id, or a tab ends up bound to the loser.
+        map[child.id] = { id: `bm:${child.id}` };
+        added = true;
       }
-    }
-    ids.delete(folderId);
-    return ids;
-  }
-
-  function insertBefore(list, item, beforeId) {
-    const at = beforeId ? list.findIndex((i) => i.id === beforeId) : -1;
-    if (at >= 0) list.splice(at, 0, item);
-    else list.push(item);
-  }
-
-  /** Insert before `beforeId`, else at the end of folder `parent`, else at the end. */
-  function insertInto(list, item, beforeId, parent) {
-    if (beforeId || !parent) return insertBefore(list, item, beforeId);
-    const inside = descendantIds(list, parent);
-    let at = -1;
-    list.forEach((x, i) => {
-      if (x.id === parent || inside.has(x.id)) at = i;
-    });
-    list.splice(at + 1, 0, item);
-  }
-
-  function notify() {
-    browser.runtime.sendMessage({ type: "arcfox:changed" }).catch(() => {});
-  }
-
-  /* ---------- Storage ---------- */
-
-  const DATA = browser.storage.local;
-  // Lists are split across numbered keys (a leftover from storage.sync's 8KB
-  // per-key limit; harmless in local storage and keeps the format stable).
-  const CHUNK_BYTES = 7000;
-
-  function readList(all, key) {
-    const list = Array.isArray(all[key]) ? [...all[key]] : [];
-    for (let i = 1; Array.isArray(all[`${key}#${i}`]); i++) list.push(...all[`${key}#${i}`]);
-    return list;
-  }
-
-  /** Write lists ({key: list}) in chunks and drop chunks no longer needed. */
-  async function writeLists(entries) {
-    stateCache = null;
-    const existing = Object.keys(await DATA.get(null));
-    const set = {};
-    const remove = [];
-    for (const [key, list] of Object.entries(entries)) {
-      const chunks = [[]];
-      let size = 2;
-      for (const item of list) {
-        const n = JSON.stringify(item).length + 1;
-        if (size + n > CHUNK_BYTES && chunks.at(-1).length) {
-          chunks.push([]);
-          size = 2;
-        }
-        chunks.at(-1).push(item);
-        size += n;
-      }
-      chunks.forEach((chunk, i) => (set[i ? `${key}#${i}` : key] = chunk));
-      for (const k of existing) {
-        const n = k.startsWith(`${key}#`) ? Number(k.slice(key.length + 1)) : 0;
-        if (n >= chunks.length) remove.push(k);
-      }
-    }
-    await DATA.set(set);
-    if (remove.length) await DATA.remove(remove);
-  }
-
-  const writeList = (key, list) => writeLists({ [key]: list });
-
-  // Reading every key and rebuilding the state is the sidebar's hot path (it
-  // refreshes on each tab event), so keep the last result until something
-  // changes. storage.onChanged fires in this context too, including for our
-  // own writes.
-  let stateCache = null;
-  let iconCache = null;
-  let visitCache = null;
-
-  browser.storage.onChanged?.addListener?.((changes, area) => {
-    if (area !== "local") return;
-    for (const key of Object.keys(changes)) {
-      if (key === ICON_KEY) iconCache = null;
-      if (key === VISITS_KEY) visitCache = null;
-      else if (key === SPACES_KEY || key.startsWith(FAV_KEY) || key.startsWith(PIN_PREFIX)) stateCache = null;
-    }
-  });
-
-  async function getState() {
-    if (stateCache) return stateCache;
-    let all = await DATA.get(null);
-    if (!(SPACES_KEY in all)) {
-      // One-time move from storage.sync (Arc before 0.4).
-      const old = await browser.storage.sync.get(null).catch(() => ({}));
-      const keep = Object.fromEntries(
-        Object.entries(old).filter(([k]) => k === SPACES_KEY || k.startsWith(FAV_KEY) || k.startsWith(PIN_PREFIX))
-      );
-      if (keep[SPACES_KEY]) {
-        await DATA.set(keep);
-        all = await DATA.get(null);
-      }
-    }
-    let spaces = Array.isArray(all[SPACES_KEY]) && all[SPACES_KEY].length ? all[SPACES_KEY] : null;
-    if (!spaces) {
-      // Fixed id, so concurrent first runs (background + sidebar) agree.
-      spaces = [{ ...DEFAULT_SPACE }];
-      stateCache = null;
-    await DATA.set({ [SPACES_KEY]: spaces });
-    }
-    const pins = new Map(spaces.map((s) => [s.id, readList(all, pinKey(s.id))]));
-    const favLists = new Map([[FAV_KEY, readList(all, FAV_KEY)]]);
-    for (const key of Object.keys(all)) {
-      if (key.startsWith(`${FAV_KEY}@`) && !key.includes("#")) favLists.set(key, readList(all, key));
-    }
-    // `favorites`: every favorite in every list (for "is this a favorite?" checks).
-    const favorites = [...favLists.values()].flat();
-    stateCache = { favorites, favLists, spaces, pins };
-    return stateCache;
-  }
-
-  function listFor(state, key) {
-    if (isFavKey(key)) return state.favLists?.get(key) || (key === FAV_KEY ? state.favorites : []);
-    return state.pins.get(spaceOfKey(key)) || [];
-  }
-
-  function findItem(state, itemId) {
-    for (const [key, list] of state.favLists || [[FAV_KEY, state.favorites]]) {
-      const fav = list.find((f) => f.id === itemId);
-      if (fav) return { key, spaceId: null, list, item: fav };
-    }
-    for (const [spaceId, list] of state.pins) {
-      const item = list.find((i) => i.id === itemId);
-      if (item) return { key: pinKey(spaceId), spaceId, list, item };
-    }
-    return null;
-  }
-
-  const allItemIds = (state) =>
-    new Set([...state.favorites, ...[...state.pins.values()].flat()].map((i) => i.id));
-
-  async function getIconCache() {
-    if (iconCache) return iconCache;
-    const { [ICON_KEY]: cache } = await browser.storage.local.get(ICON_KEY);
-    iconCache = cache && typeof cache === "object" ? cache : {};
-    return iconCache;
-  }
-
-  async function cacheIcon(itemId, url) {
-    if (!url || !/^(https?:|data:image\/)/i.test(url)) return;
-    const cache = await getIconCache();
-    if (cache[itemId] === url) return;
-    cache[itemId] = url;
-    iconCache = null;
-    await browser.storage.local.set({ [ICON_KEY]: cache });
-  }
-
-  async function dropIcon(itemId) {
-    const cache = await getIconCache();
-    if (!(itemId in cache)) return;
-    delete cache[itemId];
-    iconCache = null;
-    await browser.storage.local.set({ [ICON_KEY]: cache });
-  }
-
-  /* ---------- Session values ---------- */
-
-  // Every sessions.getTabValue is a round trip to the parent process, and a
-  // scan asks for two per tab: with a few hundred tabs that is by far the
-  // slowest thing the sidebar does, and it scans on most tab events. The
-  // values only change when Arc writes one, so remember what was read. Only
-  // answers are kept — a tab with no space yet is given one a moment later,
-  // and that must not be cached as "none".
-  const tabValues = new Map(); // `${tabId}:${key}` -> value
-
-  async function tabValue(tabId, key) {
-    const cacheId = `${tabId}:${key}`;
-    if (tabValues.has(cacheId)) return tabValues.get(cacheId);
-    let value;
-    try {
-      value = await browser.sessions.getTabValue(tabId, key);
-    } catch {
-      return undefined; // tab already gone
-    }
-    if (value !== undefined && value !== null) tabValues.set(cacheId, value);
-    return value;
-  }
-
-  /** Record a value this context just wrote, and tell the others to re-read. */
-  function noteTabValue(tabId, key, value) {
-    const cacheId = `${tabId}:${key}`;
-    if (value === undefined || value === null) tabValues.delete(cacheId);
-    else tabValues.set(cacheId, value);
-    // Arc runs in several contexts (background, each sidebar); each caches on
-    // its own, so a write has to reach the rest. Senders don't get their own
-    // message, and nobody listening is fine.
-    browser.runtime.sendMessage({ type: "arcsidebar:tab-value", tabId, key }).catch(() => {});
-  }
-
-  browser.runtime.onMessage.addListener((msg) => {
-    if (msg?.type === "arcsidebar:tab-value") tabValues.delete(`${msg.tabId}:${msg.key}`);
-  });
-
-  browser.tabs.onRemoved.addListener((tabId) => {
-    tabValues.delete(`${tabId}:${ITEM_VALUE}`);
-    tabValues.delete(`${tabId}:${SPACE_VALUE}`);
-  });
-
-  async function windowValue(windowId, key) {
-    try {
-      return await browser.sessions.getWindowValue(windowId, key);
-    } catch {
-      return undefined;
-    }
-  }
-
-  const getTabItem = (tabId) => tabValue(tabId, ITEM_VALUE);
-  const getTabSpace = (tabId) => tabValue(tabId, SPACE_VALUE);
-  // A tab can be gone by the time it is marked (closed by hand, or taken for
-  // something else), and that is no reason to fail whatever opened it.
-  const setTabItem = async (tabId, itemId) => {
-    try {
-      await browser.sessions.setTabValue(tabId, ITEM_VALUE, itemId);
-      noteTabValue(tabId, ITEM_VALUE, itemId);
-    } catch {
-      // tab already gone
-    }
-  };
-  const setTabSpace = async (tabId, spaceId) => {
-    try {
-      await browser.sessions.setTabValue(tabId, SPACE_VALUE, spaceId);
-      noteTabValue(tabId, SPACE_VALUE, spaceId);
-    } catch {
-      // tab already gone
-    }
-  };
-
-  async function clearTabItem(tabId) {
-    try {
-      await browser.sessions.removeTabValue(tabId, ITEM_VALUE);
-      noteTabValue(tabId, ITEM_VALUE, null);
-    } catch {
-      // tab already gone
-    }
-  }
-
-  /**
-   * Read item bindings and spaces for the given tabs.
-   * Duplicated tabs inherit session values: the oldest binding wins, the rest
-   * are released. Bindings to deleted items are released too.
-   */
-  async function scanTabs(tabs, state) {
-    const known = allItemIds(state);
-    const metas = await Promise.all(
-      tabs.map(async (t) => [t, ...(await Promise.all([getTabItem(t.id), getTabSpace(t.id)]))])
-    );
-    metas.sort((a, b) => a[0].id - b[0].id);
-    const bound = new Map(); // itemId -> tab
-    const tabItem = new Map(); // tabId -> itemId
-    const tabSpace = new Map(); // tabId -> spaceId
-    for (const [tab, itemId, spaceId] of metas) {
-      if (spaceId) tabSpace.set(tab.id, spaceId);
-      if (!itemId) continue;
-      if (!known.has(itemId) || bound.has(itemId)) {
-        clearTabItem(tab.id);
-        continue;
-      }
-      bound.set(itemId, tab);
-      tabItem.set(tab.id, itemId);
-    }
-    return { bound, tabItem, tabSpace };
-  }
-
-  async function findBoundTab(state, itemId) {
-    return (await scanTabs(await browser.tabs.query({}), state)).bound.get(itemId) || null;
-  }
-
-  /* ---------- Spaces & windows ---------- */
-
-  async function getWindowSpace(windowId, state) {
-    const id = await windowValue(windowId, SPACE_VALUE);
-    return state.spaces.some((s) => s.id === id) ? id : state.spaces[0].id;
-  }
-
-  async function rememberActive(windowId, spaceId, tabId) {
-    const last = (await windowValue(windowId, LAST_VALUE)) || {};
-    if (last[spaceId] === tabId) return;
-    last[spaceId] = tabId;
-    await browser.sessions.setWindowValue(windowId, LAST_VALUE, last);
-  }
-
-  /**
-   * Where a new tab goes in a space: above that space's other tabs (Arc puts
-   * new tabs at the top), after any natively pinned ones.
-   */
-  async function topIndexOfSpace(windowId, spaceId, { ignoreTabId = null } = {}) {
-    const tabs = (await browser.tabs.query({ windowId })).filter((t) => t.id !== ignoreTabId);
-    const pinned = tabs.filter((t) => t.pinned).length;
-    const state = await getState();
-    const { tabItem, tabSpace } = await scanTabs(tabs, state);
-    const favIds = new Set(state.favorites.map((f) => f.id));
-    const mine = tabs.filter(
-      (t) => !t.pinned && !favIds.has(tabItem.get(t.id)) && (tabSpace.get(t.id) ?? spaceId) === spaceId
-    );
-    return mine.length ? Math.max(pinned, Math.min(...mine.map((t) => t.index))) : pinned;
-  }
-
-  async function createTabInSpace(windowId, space, { url, active = true, index } = {}) {
-    const opts = { windowId, active };
-    if (url) opts.url = url;
-    if (index !== undefined) opts.index = index;
-    if (space.container) opts.cookieStoreId = space.container;
-    let tab;
-    try {
-      tab = await browser.tabs.create(opts);
-    } catch (err) {
-      if (!opts.cookieStoreId) throw err;
-      delete opts.cookieStoreId; // container was deleted
-      tab = await browser.tabs.create(opts);
-    }
-    await setTabSpace(tab.id, space.id);
-    return tab;
-  }
-
-  /** Split a window's tabs into the ones visible in `spaceId` and the rest. */
-  async function computeVisibility(windowId, state, spaceId) {
-    const tabs = await browser.tabs.query({ windowId });
-    const { tabItem, tabSpace } = await scanTabs(tabs, state);
-    const favIds = new Set(state.favorites.map((f) => f.id));
-    const spaceIds = new Set(state.spaces.map((s) => s.id));
-    const mine = []; // tabs of the space (not favorites)
-    const show = [];
-    const hide = [];
-    for (const t of tabs) {
-      if (favIds.has(tabItem.get(t.id))) {
-        show.push(t.id);
-        continue;
-      }
-      const s = tabSpace.get(t.id);
-      if (!s || !spaceIds.has(s) || s === spaceId) {
-        mine.push(t);
-        show.push(t.id);
-      } else {
-        hide.push(t.id);
-      }
-    }
-    return { tabs, mine, show, hide };
-  }
-
-  async function switchSpace(windowId, spaceId) {
-    const state = await getState();
-    const space = state.spaces.find((s) => s.id === spaceId);
-    if (!space) return;
-    // Set first so the background's onActivated sees the new space.
-    await browser.sessions.setWindowValue(windowId, SPACE_VALUE, spaceId);
-    const { mine, show, hide } = await computeVisibility(windowId, state, spaceId);
-    const last = (await windowValue(windowId, LAST_VALUE)) || {};
-    let target =
-      mine.find((t) => t.id === last[spaceId]) ||
-      mine.slice().sort((a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0))[0];
-    if (show.length) await browser.tabs.show(show);
-    if (target) await browser.tabs.update(target.id, { active: true });
-    else target = await createTabInSpace(windowId, space);
-    const toHide = hide.filter((id) => id !== target.id);
-    if (toHide.length) await browser.tabs.hide(toHide).catch(() => {});
-    notify();
-  }
-
-  /** Re-apply hidden/shown state, following the active tab if it lives in another space. */
-  async function syncVisibility(windowId) {
-    const state = await getState();
-    let spaceId = await getWindowSpace(windowId, state);
-    const [active] = await browser.tabs.query({ windowId, active: true });
-    if (active) {
-      const s = await getTabSpace(active.id);
-      const itemId = await getTabItem(active.id);
-      const isFav = state.favorites.some((f) => f.id === itemId);
-      if (s && s !== spaceId && !isFav && state.spaces.some((x) => x.id === s)) {
-        spaceId = s;
-        await browser.sessions.setWindowValue(windowId, SPACE_VALUE, spaceId);
-      }
-    }
-    const { show, hide } = await computeVisibility(windowId, state, spaceId);
-    if (show.length) await browser.tabs.show(show);
-    const toHide = hide.filter((id) => id !== active?.id);
-    if (toHide.length) await browser.tabs.hide(toHide).catch(() => {});
-    notify();
-  }
-
-  /**
-   * Give the space's container the space's name and color, so Firefox's "Open
-   * in container" menus and the tab stripe read the same as Arc's footer. Only
-   * containers Arc made (ownContainer) are touched: a container the user keeps
-   * for their own reasons isn't Arc's to rename.
-   */
-  async function syncContainer(space) {
-    if (!space?.container || !space.ownContainer) return;
-    const identity = await browser.contextualIdentities.get(space.container).catch(() => null);
-    if (!identity) return;
-    const color = COLORS[space.color] ? space.color : identity.color; // same palette as Firefox's
-    if (identity.name === space.name && identity.color === color) return;
-    await browser.contextualIdentities.update(space.container, { name: space.name, color }).catch(() => {});
-  }
-
-  async function saveSpace(space) {
-    const state = await getState();
-    const spaces = state.spaces.slice();
-    const at = space.id ? spaces.findIndex((s) => s.id === space.id) : -1;
-    let saved;
-    if (at >= 0) spaces[at] = saved = { ...spaces[at], ...space };
-    else spaces.push((saved = { ...space, id: uid() }));
-    stateCache = null;
-    await DATA.set({ [SPACES_KEY]: spaces });
-    await syncContainer(saved);
-    notify();
-    return saved;
-  }
-
-  /**
-   * Spaces imported before Arc tracked which containers are its own: a
-   * container Arc made carries the fingerprint icon, and is only reachable
-   * here because a space points at it.
-   */
-  async function adoptArcContainers() {
-    const state = await getState();
-    const spaces = state.spaces.slice();
-    let changed = false;
-    for (const [i, space] of spaces.entries()) {
-      if (!space.container || space.ownContainer !== undefined) continue;
-      const identity = await browser.contextualIdentities.get(space.container).catch(() => null);
-      spaces[i] = { ...space, ownContainer: identity?.icon === "fingerprint" };
-      changed = true;
-    }
-    if (!changed) return;
-    stateCache = null;
-    await DATA.set({ [SPACES_KEY]: spaces });
-    for (const space of spaces) await syncContainer(space);
-    notify();
-  }
-
-  async function moveSpace(spaceId, beforeSpaceId) {
-    if (spaceId === beforeSpaceId) return;
-    const state = await getState();
-    const spaces = state.spaces.filter((s) => s.id !== spaceId);
-    const space = state.spaces.find((s) => s.id === spaceId);
-    if (!space) return;
-    insertBefore(spaces, space, beforeSpaceId);
-    stateCache = null;
-    await DATA.set({ [SPACES_KEY]: spaces });
-    notify();
-  }
-
-  /** Tabs (all windows) that live in a space, excluding favorites. */
-  async function spaceTabs(spaceId) {
-    const state = await getState();
-    const tabs = await browser.tabs.query({});
-    const { tabItem, tabSpace } = await scanTabs(tabs, state);
-    const favIds = new Set(state.favorites.map((f) => f.id));
-    return tabs.filter((t) => tabSpace.get(t.id) === spaceId && !favIds.has(tabItem.get(t.id)));
-  }
-
-  /** Delete a space and close its tabs. The last space cannot be deleted. */
-  async function deleteSpace(spaceId) {
-    const state = await getState();
-    const rest = state.spaces.filter((s) => s.id !== spaceId);
-    if (!rest.length || rest.length === state.spaces.length) return false;
-    const doomed = (await spaceTabs(spaceId)).map((t) => t.id);
-    stateCache = null;
-    await DATA.set({ [SPACES_KEY]: rest });
-    await writeList(pinKey(spaceId), []);
-    stateCache = null;
-    await DATA.remove(pinKey(spaceId));
-    for (const win of await browser.windows.getAll({ windowTypes: ["normal"] })) {
-      if ((await windowValue(win.id, SPACE_VALUE)) === spaceId) await switchSpace(win.id, rest[0].id);
-    }
-    if (doomed.length) await browser.tabs.remove(doomed);
-    notify();
-    return true;
-  }
-
-  /** Move a tab to another space. Reopens it when the space uses a different container. */
-  async function moveTabToSpace(tabId, spaceId) {
-    const state = await getState();
-    const space = state.spaces.find((s) => s.id === spaceId);
-    const tab = await browser.tabs.get(tabId).catch(() => null);
-    if (!space || !tab) return;
-    const itemId = await getTabItem(tabId);
-    const found = itemId && findItem(state, itemId);
-    let moved = tabId;
-    if (found) {
-      if (isFavKey(found.key)) return; // favorites belong to a container, not a space
-      await moveItem(itemId, pinKey(spaceId));
-    } else if (
-      space.container &&
-      tab.cookieStoreId !== space.container &&
-      (isFavoritable(tab.url) || isNewTabUrl(tab.url))
-    ) {
-      // A different container means the tab is reopened there.
-      const replacement = await createTabInSpace(tab.windowId, space, {
-        url: isFavoritable(tab.url) ? tab.url : undefined,
-        active: false,
-        index: tab.index + 1,
-      });
-      moved = replacement.id;
-      await browser.tabs.remove(tabId);
-    } else {
-      await setTabSpace(tabId, spaceId);
-    }
-    // Follow the tab into its new space (Arc does the same).
-    await rememberActive(tab.windowId, spaceId, moved);
-    await switchSpace(tab.windowId, spaceId);
-    await browser.tabs.update(moved, { active: true }).catch(() => {});
-  }
-
-  /** Give a freshly created tab a space; reopen new-tab pages in the space's container. */
-  async function adoptTab(tabId) {
-    if ((await getTabItem(tabId)) || (await getTabSpace(tabId))) return;
-    const tab = await browser.tabs.get(tabId).catch(() => null);
-    if (!tab || tab.incognito) return; // private tabs belong to no space
-    const state = await getState();
-    let spaceId = tab.openerTabId !== undefined ? await getTabSpace(tab.openerTabId) : null;
-    if (!state.spaces.some((s) => s.id === spaceId)) spaceId = await getWindowSpace(tab.windowId, state);
-    const space = state.spaces.find((s) => s.id === spaceId);
-    if (
-      space.container &&
-      tab.cookieStoreId !== space.container &&
-      tab.openerTabId === undefined &&
-      isNewTabUrl(tab.url)
-    ) {
-      await createTabInSpace(tab.windowId, space, { active: tab.active, index: tab.index });
-      await browser.tabs.remove(tab.id);
-      return;
-    }
-    await setTabSpace(tab.id, spaceId);
-    notify();
-  }
-
-  /** Arc has no native pinned tabs: turn one into a pinned item of its space. */
-  async function convertNativePin(tab) {
-    await browser.tabs.update(tab.id, { pinned: false }).catch(() => {});
-    const state = await getState();
-    const itemId = await getTabItem(tab.id);
-    if ((itemId && findItem(state, itemId)) || !isFavoritable(tab.url)) return;
-    const spaceId = (await getTabSpace(tab.id)) || (await getWindowSpace(tab.windowId, state));
-    await addItem(pinKey(spaceId), tab);
-  }
-
-  /**
-   * Drop blank new-tab / command-bar pages from Firefox's recently closed list,
-   * so Cmd/Ctrl+Shift+T and the Archive bring back real tabs.
-   */
-  async function forgetBlankClosedTabs() {
-    const closed = await browser.sessions.getRecentlyClosed({ maxResults: 25 }).catch(() => []);
-    for (const entry of closed) {
-      if (!entry.tab || !isNewTabUrl(entry.tab.url)) continue;
-      await browser.sessions.forgetClosedTab(entry.tab.windowId, entry.tab.sessionId).catch(() => {});
-    }
-  }
-
-  /* ---------- Import (from Arc) ---------- */
-
-  // Site icon until the tab has been opened once (then the real favicon is cached).
-  const guessIcon = (url) => {
-    try {
-      return new URL("/favicon.ico", url).href;
-    } catch {
-      return "";
-    }
-  };
-
-  /**
-   * Add imported spaces, their pinned items/folders, and favorites in one write.
-   * spaces: [{name, icon, color, container, ownContainer,
-   *           pins: [{type: "tab", url, title} | {type: "folder", name, children: [tab | folder]}]}]
-   * favorites: [{url, title, container}] (container null = no container)
-   * replace: drop the current spaces, pins and favorites first (re-importing).
-   * If the current setup is still the untouched default (one empty space, no
-   * favorites), the imported spaces replace it.
-   */
-  async function importSpaces({ spaces, favorites = [], replace = false }) {
-    let state = await getState();
-    if (replace && spaces.length) {
-      const old = [...state.favLists.keys(), ...state.spaces.map((sp) => pinKey(sp.id))];
-      await writeLists(Object.fromEntries(old.map((k) => [k, []])));
-      stateCache = null;
-      await DATA.remove(old);
-      state = await getState();
-    }
-    const pristine =
-      (replace && spaces.length) ||
-      (state.spaces.length === 1 && !state.favorites.length && !(state.pins.get(state.spaces[0].id) || []).length);
-    const item = (t, parent) => ({ id: uid(), url: t.url, title: t.title, icon: guessIcon(t.url), ...(parent ? { parent } : {}) });
-    const newSpaces = [];
-    const writes = {};
-    let count = 0;
-    for (const sp of spaces) {
-      const id = uid();
-      newSpaces.push({ id, name: sp.name, icon: sp.icon || "", color: sp.color, container: sp.container || null, ownContainer: !!sp.ownContainer });
-      const list = [];
-      const add = (x, parent) => {
-        if (x.type === "tab") return list.push(item(x, parent));
-        const folder = { id: uid(), type: "folder", name: x.name, open: false, ...(parent ? { parent } : {}) };
-        list.push(folder);
-        for (const c of x.children) add(c, folder.id);
-      };
-      for (const x of sp.pins) add(x, null);
-      count += list.filter((i) => !isFolder(i)).length;
-      writes[pinKey(id)] = list;
-    }
-    let addedFavs = 0;
-    for (const f of favorites) {
-      const key = favKey({ container: f.container });
-      writes[key] ??= [...listFor(state, key)];
-      if (writes[key].some((x) => x.url === f.url)) continue;
-      writes[key].push(item(f));
-      addedFavs++;
-    }
-    await writeLists(writes);
-    stateCache = null;
-    await DATA.set({ [SPACES_KEY]: pristine && newSpaces.length ? newSpaces : [...state.spaces, ...newSpaces] });
-    if (pristine && newSpaces.length) {
-      stateCache = null;
-      await DATA.remove(state.spaces.map((sp) => pinKey(sp.id)));
-      // Open tabs from the replaced spaces move to the first imported one;
-      // their pinned/favorite bindings are gone with the old lists.
-      const oldIds = new Set(state.spaces.map((sp) => sp.id));
-      for (const tab of await browser.tabs.query({})) {
-        if (oldIds.has(await getTabSpace(tab.id))) await setTabSpace(tab.id, newSpaces[0].id);
-      }
-      for (const win of await browser.windows.getAll({ windowTypes: ["normal"] })) await switchSpace(win.id, newSpaces[0].id);
-    }
-    notify();
-    return { spaces: newSpaces.length, pins: count, favorites: addedFavs, replacedDefault: pristine };
-  }
-
-  /**
-   * Add a tree of pinned items and folders to the end of a space's pinned
-   * list (bookmarks import). tree: [{type: "tab", url, title} | {type: "folder", name, children: tree}]
-   * Only web addresses are kept. Returns {pins, folders} added.
-   */
-  async function importPins(spaceId, tree) {
-    const state = await getState();
-    const key = pinKey(spaceId);
-    const list = listFor(state, key).slice();
-    let pins = 0;
-    let folders = 0;
-    const add = (x, parent) => {
+      const meta = map[child.id];
       const at = parent ? { parent } : {};
-      if (x.type === "tab") {
-        if (!isFavoritable(x.url)) return;
-        list.push({ id: uid(), url: x.url, title: x.title || x.url, icon: guessIcon(x.url), ...at });
-        pins++;
-        return;
-      }
-      const folder = { id: uid(), type: "folder", name: x.name || "Folder", open: false, ...at };
-      list.push(folder);
-      folders++;
-      for (const c of x.children) add(c, folder.id);
-    };
-    for (const x of tree) add(x, null);
-    await writeList(key, list);
-    notify();
-    return { pins, folders };
-  }
-
-  /* ---------- Favorites & pinned items ---------- */
-
-  async function openItem(itemId, windowId) {
-    const state = await getState();
-    const found = findItem(state, itemId);
-    if (!found || isFolder(found.item)) return null;
-    const tab = await findBoundTab(state, itemId);
-    if (tab) {
-      await browser.tabs.update(tab.id, { active: true });
-      if (tab.windowId !== windowId) await browser.windows.update(tab.windowId, { focused: true });
-      return tab;
-    }
-    const space = found.spaceId && state.spaces.find((s) => s.id === found.spaceId);
-    const container = !space && found.key.startsWith(`${FAV_KEY}@`) ? found.key.slice(FAV_KEY.length + 1) : null;
-    const created = space
-      ? await createTabInSpace(windowId, space, { url: found.item.url })
-      : await browser.tabs
-          .create({ url: found.item.url, windowId, active: true, ...(container ? { cookieStoreId: container } : {}) })
-          .catch(() => browser.tabs.create({ url: found.item.url, windowId, active: true })); // container gone
-    await setTabItem(created.id, itemId);
-    notify();
-    return created;
-  }
-
-  /** Turn a tab into a favorite (key = FAV_KEY) or pinned item (key = pinKey(space)). */
-  async function addItem(key, tab, beforeId = null, { parent = null } = {}) {
-    if (!tab || !isFavoritable(tab.url)) return null;
-    const state = await getState();
-    const existing = await getTabItem(tab.id);
-    if (existing && findItem(state, existing)) {
-      await moveItem(existing, key, beforeId, { parent });
-      return findItem(state, existing).item;
-    }
-    const item = { id: uid(), url: tab.url, title: tab.title || tab.url, icon: syncableIcon(tab.favIconUrl) };
-    if (parent && !isFavKey(key)) item.parent = parent;
-    const list = listFor(state, key).slice();
-    insertInto(list, item, beforeId, item.parent);
-    await writeList(key, list);
-    await setTabItem(tab.id, item.id);
-    const spaceId = spaceOfKey(key);
-    if (spaceId) await setTabSpace(tab.id, spaceId);
-    await cacheIcon(item.id, tab.favIconUrl);
-    notify();
-    return item;
-  }
-
-  /**
-   * Reorder an item, move it between favorites and a space's pinned list, or
-   * in/out of a folder (`parent`: folder id, or null for top level).
-   * Folders only live in pinned lists; they can go into other folders, but
-   * not into themselves or anything inside them.
-   */
-  async function moveItem(itemId, toKey, beforeId = null, { parent = null } = {}) {
-    const state = await getState();
-    const found = findItem(state, itemId);
-    if (!found || itemId === beforeId) return;
-    if (isFolder(found.item) && isFavKey(toKey)) return;
-    // A folder carries everything inside it along, wherever it goes.
-    const inside = isFolder(found.item) ? descendantIds(found.list, itemId) : new Set();
-    if (parent === itemId || inside.has(parent) || inside.has(beforeId)) return;
-    const item = { ...found.item };
-    if (parent && !isFavKey(toKey)) item.parent = parent;
-    else delete item.parent;
-    const children = found.list.filter((i) => inside.has(i.id));
-    const from = found.list.filter((i) => i.id !== itemId && !inside.has(i.id));
-    if (found.key === toKey) {
-      insertInto(from, item, beforeId, item.parent);
-      from.splice(from.indexOf(item) + 1, 0, ...children);
-      await writeList(toKey, from);
-    } else {
-      const to = listFor(state, toKey).slice();
-      insertInto(to, item, beforeId, item.parent);
-      to.splice(to.indexOf(item) + 1, 0, ...children);
-      await writeLists({ [found.key]: from, [toKey]: to });
-      const spaceId = spaceOfKey(toKey);
-      const tab = spaceId && (await findBoundTab(state, itemId));
-      if (tab) await setTabSpace(tab.id, spaceId);
-    }
-    notify();
-  }
-
-  /** Remove an item. Its tab (if open) stays open as a regular tab. */
-  async function removeItem(itemId, spaceIdForTab = null) {
-    const state = await getState();
-    const found = findItem(state, itemId);
-    if (!found) return null;
-    const tab = await findBoundTab(state, itemId);
-    if (tab) {
-      await clearTabItem(tab.id);
-      const spaceId =
-        spaceIdForTab || found.spaceId || (await getTabSpace(tab.id)) || (await getWindowSpace(tab.windowId, state));
-      await setTabSpace(tab.id, spaceId);
-    }
-    await writeList(found.key, found.list.filter((i) => i.id !== itemId));
-    await dropIcon(itemId);
-    notify();
-    return tab;
-  }
-
-  /** Navigate the item's tab back to its saved URL. */
-  async function resetItem(itemId) {
-    const state = await getState();
-    const found = findItem(state, itemId);
-    const tab = found && (await findBoundTab(state, itemId));
-    if (tab) await browser.tabs.update(tab.id, { url: found.item.url });
-  }
-
-  /** Save the item tab's current page as the item's URL. */
-  async function saveCurrentUrl(itemId) {
-    const state = await getState();
-    const found = findItem(state, itemId);
-    const tab = found && (await findBoundTab(state, itemId));
-    if (!tab || !isFavoritable(tab.url)) return;
-    const updated = {
-      ...found.item,
-      url: tab.url,
-      title: tab.title || tab.url,
-      icon: syncableIcon(tab.favIconUrl) || found.item.icon,
-    };
-    await writeList(found.key, found.list.map((i) => (i.id === itemId ? updated : i)));
-    await cacheIcon(itemId, tab.favIconUrl);
-  }
-
-  /**
-   * Give a favorite or pinned item its own name, shown instead of its page
-   * title; an empty name goes back to the page title.
-   */
-  async function renameItem(itemId, name) {
-    const state = await getState();
-    const found = findItem(state, itemId);
-    if (!found || isFolder(found.item)) return;
-    const rename = (i) => {
-      if (i.id !== itemId) return i;
-      const { name: _old, ...rest } = i;
-      return name ? { ...rest, name } : rest;
-    };
-    await writeList(found.key, found.list.map(rename));
-    notify();
-  }
-
-  /* ---------- Folders (pinned section) ---------- */
-
-  /**
-   * New folder in a space's pinned list holding existing pinned items and
-   * folders (`itemIds`) and/or open tabs (`tabIds`, pinned on the way in). It
-   * takes the place of the first selected pinned item, or goes to the end of
-   * folder `parent` (top level if null).
-   */
-  async function createFolder(spaceId, { name = "New Folder", itemIds = [], tabIds = [], parent = null } = {}) {
-    const state = await getState();
-    const key = pinKey(spaceId);
-    const list = listFor(state, key).slice();
-    const picked = new Set(itemIds.filter((id) => list.some((i) => i.id === id)));
-    // Picked folders bring their contents; anything already inside a picked folder stays where it is in there.
-    const nested = new Set();
-    for (const id of picked) for (const d of descendantIds(list, id)) nested.add(d);
-    const top = list.filter((i) => picked.has(i.id) && !nested.has(i.id));
-    const moved = list.filter((i) => picked.has(i.id) || nested.has(i.id));
-    const firstAt = list.findIndex((i) => moved.includes(i));
-    const folderParent = top.length ? top[0].parent : parent;
-    const folder = { id: uid(), type: "folder", name, open: true, ...(folderParent ? { parent: folderParent } : {}) };
-    const rest = list.filter((i) => !moved.includes(i));
-    const inside = moved.map((i) => (top.includes(i) ? { ...i, parent: folder.id } : i));
-
-    // Tabs: reuse their existing item if they already have one, else pin them.
-    for (const tabId of tabIds) {
-      const tab = await browser.tabs.get(tabId).catch(() => null);
-      if (!tab || !isFavoritable(tab.url)) continue;
-      const bound = await getTabItem(tab.id);
-      if (bound && findItem(state, bound)) continue;
-      const item = { id: uid(), url: tab.url, title: tab.title || tab.url, icon: syncableIcon(tab.favIconUrl), parent: folder.id };
-      inside.push(item);
-      await setTabItem(tab.id, item.id);
-      await setTabSpace(tab.id, spaceId);
-      await cacheIcon(item.id, tab.favIconUrl);
-    }
-    if (firstAt >= 0) {
-      const next = list.slice(firstAt).find((i) => rest.includes(i));
-      const at = next ? rest.indexOf(next) : -1;
-      if (at >= 0) rest.splice(at, 0, folder, ...inside);
-      else rest.push(folder, ...inside);
-    } else {
-      insertInto(rest, folder, null, folder.parent);
-      rest.splice(rest.indexOf(folder) + 1, 0, ...inside);
-    }
-    await writeList(key, rest);
-    notify();
-    return folder;
-  }
-
-  async function updateFolder(folderId, patch) {
-    const state = await getState();
-    const found = findItem(state, folderId);
-    if (!found || !isFolder(found.item)) return;
-    const list = found.list.map((i) => (i.id === folderId ? { ...i, ...patch } : i));
-    await writeList(found.key, list);
-    notify();
-  }
-
-  /**
-   * Remove a folder; its contents move up a level into the folder's own
-   * parent (keepItems), or are removed too, subfolders and all.
-   */
-  async function deleteFolder(folderId, { keepItems = true } = {}) {
-    const state = await getState();
-    const found = findItem(state, folderId);
-    if (!found || !isFolder(found.item)) return;
-    const inside = descendantIds(found.list, folderId);
-    if (!keepItems) {
-      const tabs = await browser.tabs.query({});
-      const { bound } = await scanTabs(tabs, state);
-      for (const child of found.list.filter((i) => inside.has(i.id))) {
-        const tab = bound.get(child.id);
-        if (tab) {
-          await clearTabItem(tab.id);
-          await setTabSpace(tab.id, found.spaceId);
-        }
-        await dropIcon(child.id);
+      if (child.url) out.push({ id: meta.id, url: child.url, title: child.title || child.url, ...at });
+      else {
+        out.push({
+          id: meta.id,
+          type: "folder",
+          name: child.title || "Folder",
+          open: !!meta.open,
+          ...(meta.icon ? { icon: meta.icon } : {}),
+          ...(meta.color ? { color: meta.color } : {}),
+          ...at,
+        });
+        walk(child, meta.id);
       }
     }
-    const up = found.item.parent;
-    const list = found.list
-      .filter((i) => i.id !== folderId && (keepItems || !inside.has(i.id)))
-      .map((i) => {
-        if (i.parent !== folderId) return i;
-        const { parent, ...rest } = i;
-        return up ? { ...rest, parent: up } : rest;
-      });
-    await writeList(found.key, list);
-    notify();
-  }
-
-  /* ---------- Tab badges from other extensions ---------- */
-
-  /* ---------- Which container a page was seen in ----------
-   * Firefox's history has no container: a visit is a visit, whichever cookie
-   * jar it happened in (HistoryItem is {id, url, title, lastVisitTime,
-   * visitCount, typedCount}). Arc keeps its own note of where it saw a page so
-   * the command bar and address bar can suggest this space's pages. Pages Arc
-   * never saw — everything visited before this, or in another browser session —
-   * have no container and stay visible everywhere. */
-
-  async function getVisits() {
-    if (visitCache) return visitCache;
-    const { [VISITS_KEY]: visits = {} } = await browser.storage.local.get(VISITS_KEY);
-    visitCache = visits;
-    return visits;
-  }
-
-  /** Note that `url` was seen in `cookieStoreId`. */
-  async function recordVisit(url, cookieStoreId) {
-    if (!/^https?:\/\//i.test(url || "") || !cookieStoreId) return;
-    const visits = await getVisits();
-    const entry = visits[url] || { s: [], t: 0 };
-    if (!entry.s.includes(cookieStoreId)) entry.s = [...entry.s, cookieStoreId].slice(-4);
-    entry.t = Date.now();
-    visits[url] = entry;
-    const urls = Object.keys(visits);
-    if (urls.length > MAX_VISITS) {
-      // Drop the oldest; this is a hint for suggestions, not a history of record.
-      urls
-        .sort((a, b) => (visits[a].t || 0) - (visits[b].t || 0))
-        .slice(0, urls.length - MAX_VISITS)
-        .forEach((u) => delete visits[u]);
-    }
-    visitCache = visits;
-    await browser.storage.local.set({ [VISITS_KEY]: visits });
-  }
-
-  /** True when `url` belongs in `cookieStoreId`'s suggestions. */
-  async function seenInContainer(url, cookieStoreId) {
-    if (!cookieStoreId) return true;
-    const visits = await getVisits();
-    const entry = visits[url];
-    return !entry || entry.s.includes(cookieStoreId);
-  }
-
-  const MAX_BADGES = 200; // per extension
-  const HEX_COLOR = /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i;
-  const BADGE_ICONS = ["bot", "sparkles"]; // drawn by the sidebar (Lucide); no outside SVG
-  const text = (v, max) => (typeof v === "string" ? v.trim().slice(0, max) : "");
-
-  // One write at a time: each one reads and rewrites the whole badge map.
-  let badgeWrites = Promise.resolve();
-
-  /** Replace the badges `extensionId` shows on tabs. Only plain text, hex colors and known icon names get through. */
-  function setBadges(extensionId, badges) {
-    const write = badgeWrites.then(() => writeBadges(extensionId, badges));
-    badgeWrites = write.catch(() => {});
-    return write;
-  }
-
-  async function writeBadges(extensionId, badges) {
-    const clean = (Array.isArray(badges) ? badges : [])
-      .slice(0, MAX_BADGES)
-      .filter((b) => Number.isInteger(b?.tabId) && (text(b.label, 12) || BADGE_ICONS.includes(b.icon)))
-      .map((b) => ({
-        tabId: b.tabId,
-        label: text(b.label, 12),
-        title: text(b.title, 120),
-        color: HEX_COLOR.test(b.color || "") ? b.color : "",
-        icon: BADGE_ICONS.includes(b.icon) ? b.icon : "",
-        position: b.position === "start" ? "start" : "end",
-        pulse: b.pulse === true,
-      }));
-    const { [BADGES_KEY]: all = {} } = await browser.storage.session.get(BADGES_KEY);
-    if (clean.length) all[extensionId] = clean;
-    else delete all[extensionId];
-    await browser.storage.session.set({ [BADGES_KEY]: all });
-    await rememberProvider(extensionId);
-  }
-
-  /** Badges by tab id, from every extension. */
-  async function getBadges() {
-    const { [BADGES_KEY]: all = {} } = await browser.storage.session.get(BADGES_KEY).catch(() => ({}));
-    const byTab = new Map();
-    for (const badges of Object.values(all)) {
-      for (const b of badges) byTab.set(b.tabId, [...(byTab.get(b.tabId) || []), b]);
-    }
-    return byTab;
-  }
-
-  /* ---------- Tab menu items from other extensions ---------- */
-
-  const MAX_MENU_ITEMS = 5; // per extension
-  const tabIdList = (v) => (Array.isArray(v) ? v.filter(Number.isInteger).slice(0, 1000) : null);
-
-  /** Replace the tab menu items `extensionId` adds. Titles are plain text. */
-  function setTabMenu(extensionId, items) {
-    const write = badgeWrites.then(() => writeTabMenu(extensionId, items));
-    badgeWrites = write.catch(() => {});
-    return write;
-  }
-
-  async function writeTabMenu(extensionId, items) {
-    const clean = (Array.isArray(items) ? items : [])
-      .slice(0, MAX_MENU_ITEMS)
-      .filter((m) => /^[\w-]{1,64}$/.test(m?.id || "") && text(m.title, 60))
-      .map((m) => ({ id: m.id, title: text(m.title, 60), tabIds: tabIdList(m.tabIds), exceptTabIds: tabIdList(m.exceptTabIds) }));
-    const { [TAB_MENU_KEY]: all = {} } = await browser.storage.session.get(TAB_MENU_KEY);
-    if (clean.length) all[extensionId] = clean;
-    else delete all[extensionId];
-    await browser.storage.session.set({ [TAB_MENU_KEY]: all });
-    await rememberProvider(extensionId);
-  }
-
-  /** Menu items other extensions want on `tabId`, as [{ extensionId, id, title }]. */
-  async function tabMenuFor(tabId) {
-    const { [TAB_MENU_KEY]: all = {} } = await browser.storage.session.get(TAB_MENU_KEY).catch(() => ({}));
-    const out = [];
-    for (const [extensionId, items] of Object.entries(all)) {
-      for (const m of items) {
-        if (m.tabIds && !m.tabIds.includes(tabId)) continue;
-        if (m.exceptTabIds?.includes(tabId)) continue;
-        out.push({ extensionId, id: m.id, title: m.title });
-      }
-    }
-    return out;
-  }
-
-  async function rememberProvider(extensionId) {
-    const { [BADGE_PROVIDERS_KEY]: providers = [] } = await browser.storage.local.get(BADGE_PROVIDERS_KEY);
-    if (!providers.includes(extensionId)) {
-      await browser.storage.local.set({ [BADGE_PROVIDERS_KEY]: [...providers, extensionId] });
-    }
-  }
-
-  /**
-   * Drop the badges and menu items of extensions that are gone (disabled or removed): they can't
-   * clear their own. A message to a missing extension fails; one that's there just ignores it.
-   * `force` skips the 10 s throttle.
-   */
-  let lastProviderCheck = 0;
-  async function pruneProviders(force = false) {
-    if (!force && Date.now() - lastProviderCheck < 10000) return;
-    lastProviderCheck = Date.now();
-    const [{ [BADGES_KEY]: badges = {} }, { [TAB_MENU_KEY]: menus = {} }] = await Promise.all([
-      browser.storage.session.get(BADGES_KEY).catch(() => ({})),
-      browser.storage.session.get(TAB_MENU_KEY).catch(() => ({})),
-    ]);
-    const ids = new Set([...Object.keys(badges), ...Object.keys(menus)]);
-    await Promise.all([...ids].map((id) =>
-      browser.runtime.sendMessage(id, { type: "arcsidebar:ping" }).catch(() => Promise.all([setBadges(id, []), setTabMenu(id, [])]))));
-  }
-
-  /** Badges and menu items live in session storage: ask the extensions that set them before to send them again. */
-  async function announceToBadgeProviders() {
-    const { [BADGE_PROVIDERS_KEY]: providers = [] } = await browser.storage.local.get(BADGE_PROVIDERS_KEY);
-    for (const id of providers) browser.runtime.sendMessage(id, { type: "arcsidebar:ready" }).catch(() => {});
-  }
-
-  return {
-    setBadges,
-    getBadges,
-    setTabMenu,
-    tabMenuFor,
-    pruneProviders,
-    announceToBadgeProviders,
-    BADGES_KEY,
-    FAV_KEY,
-    favKey,
-    isFavKey,
-    SPACES_KEY,
-    PIN_PREFIX,
-    ICON_KEY,
-    COLORS,
-    spaceColor,
-    spaceIntensity,
-    paintSpace,
-    MAX_INTENSITY,
-    pinKey,
-    isFavoritable,
-    isNewTabUrl,
-    isFirefoxNewTab,
-    notify,
-    getState,
-    findItem,
-    getIconCache,
-    cacheIcon,
-    getTabItem,
-    getTabSpace,
-    setTabSpace,
-    scanTabs,
-    recordVisit,
-    seenInContainer,
-    getWindowSpace,
-    rememberActive,
-    createTabInSpace,
-    topIndexOfSpace,
-    switchSpace,
-    syncVisibility,
-    saveSpace,
-    adoptArcContainers,
-    moveSpace,
-    spaceTabs,
-    deleteSpace,
-    moveTabToSpace,
-    adoptTab,
-    convertNativePin,
-    forgetBlankClosedTabs,
-    importSpaces,
-    openItem,
-    addItem,
-    moveItem,
-    removeItem,
-    resetItem,
-    saveCurrentUrl,
-    isFolder,
-    renameItem,
-    importPins,
-    descendantIds,
-    createFolder,
-    updateFolder,
-    deleteFolder,
   };
-})();
+  walk(root, null);
+  if (added) await browser.storage.local.set({ [BM_MAP]: map });
+  return out;
+}
+
+/** Make the bookmarks toolbar match `pins`: create, update, move and remove. */
+async function writeBookmarks(pins) {
+  const folderId = await bookmarksBarId();
+  const map = await getBmMap();
+  const bmOf = Object.fromEntries(Object.entries(map).map(([bm, meta]) => [meta.id, bm]));
+  const [root] = await browser.bookmarks.getSubTree(folderId);
+  const existing = new Map(); // bookmarkId -> node, of what the sidebar shows
+  const collect = (node) => {
+    for (const child of node.children || []) {
+      if (isHidden(child)) continue;
+      existing.set(child.id, child);
+      collect(child);
+    }
+  };
+  collect(root);
+
+  // Create and update, parents first (a folder comes before its contents in the list).
+  const order = new Map(); // parent bookmark id -> [child bookmark ids], as they should be
+  for (const p of pins) {
+    const parentBm = p.parent ? bmOf[p.parent] : folderId;
+    if (!parentBm) continue;
+    const isFolder = p.type === "folder";
+    const title = isFolder ? p.name : p.name || p.title || p.url;
+    let bm = bmOf[p.id];
+    const node = bm && existing.get(bm);
+    if (!node) {
+      // Not (or no longer) in the toolbar, e.g. dragged out of it in Firefox: a new bookmark.
+      if (bm) delete map[bm];
+      const created = await browser.bookmarks.create({ parentId: parentBm, title, ...(isFolder ? {} : { url: p.url }) });
+      bm = created.id;
+      bmOf[p.id] = bm;
+    } else if (node.title !== title || (!isFolder && node.url !== p.url)) {
+      await browser.bookmarks.update(bm, isFolder ? { title } : { title, url: p.url });
+    }
+    map[bm] = {
+      id: p.id,
+      ...(isFolder && p.open ? { open: true } : {}),
+      ...(isFolder && p.icon ? { icon: p.icon } : {}),
+      ...(isFolder && p.color ? { color: p.color } : {}),
+    };
+    if (!order.has(parentBm)) order.set(parentBm, []);
+    order.get(parentBm).push(bm);
+  }
+
+  // Put every folder's children in order (and into the right folder) first. Positions
+  // count the shown bookmarks only; separators and smart bookmarks keep their places.
+  for (const [parentBm, wanted] of order) {
+    for (const [i, bm] of wanted.entries()) {
+      const children = await browser.bookmarks.getChildren(parentBm);
+      const shown = children.filter((c) => !isHidden(c));
+      if (shown[i]?.id === bm) continue;
+      const index = shown[i] ? children.indexOf(shown[i]) : children.length;
+      await browser.bookmarks.move(bm, { parentId: parentBm, index });
+    }
+  }
+
+  // Then remove what's no longer pinned: after the moves, so nothing that stays
+  // is inside a folder that goes. removeTree takes a folder's contents along.
+  const keep = new Set(pins.map((p) => bmOf[p.id]).filter(Boolean));
+  for (const [bm, node] of existing) {
+    if (keep.has(bm)) continue;
+    delete map[bm];
+    const there = (await browser.bookmarks.get(bm).catch(() => [])).length > 0;
+    if (there) await (node.url ? browser.bookmarks.remove(bm) : browser.bookmarks.removeTree(bm)).catch(() => {});
+  }
+  await browser.storage.local.set({ [BM_MAP]: map });
+}
+
+/** Bookmark writes one at a time: each one diffs against the toolbar as it is. */
+let bookmarkWrites = Promise.resolve();
+
+export function savePins(pins) {
+  const write = bookmarkWrites.then(() => writeBookmarks(pins));
+  bookmarkWrites = write.catch((err) => console.error("BookmArc: writing bookmarks failed", err));
+  return write;
+}
+
+// ---------- Session data ----------
+
+// One key per tab ("bind:<tabId>"), not one map: the sidebar and the background
+// page write bindings at the same time (a tab opened here, another one closed
+// there), and read-modify-write of a shared map let one undo the other.
+const BIND_PREFIX = `${BIND_KEY}:`;
+
+/** {tabId: itemId} of every bound tab. */
+export async function getBindings() {
+  const all = await browser.storage.session.get(null);
+  const out = {};
+  for (const [key, itemId] of Object.entries(all)) if (key.startsWith(BIND_PREFIX)) out[key.slice(BIND_PREFIX.length)] = itemId;
+  return out;
+}
+
+export const bind = (tabId, itemId) => browser.storage.session.set({ [BIND_PREFIX + tabId]: itemId });
+export const unbind = (tabId) => browser.storage.session.remove(BIND_PREFIX + tabId);
+/** Drop every tab bound to one of `itemIds`. */
+export async function unbindItems(itemIds) {
+  const bindings = await getBindings();
+  const keys = Object.keys(bindings).filter((tabId) => itemIds.includes(bindings[tabId]));
+  if (keys.length) await browser.storage.session.remove(keys.map((tabId) => BIND_PREFIX + tabId));
+}
+
+// ---------- Startup ----------
+
+/**
+ * A URL for matching, `strict` or not: without "www.", the fragment and a
+ * trailing slash; loose also without the query ("github.com/?locale=de" is
+ * "github.com/"). "" for what isn't a web address.
+ */
+function matchKey(url, strict) {
+  try {
+    const u = new URL(url);
+    if (!/^https?:$/.test(u.protocol)) return "";
+    const path = u.pathname.replace(/\/+$/, "");
+    return u.hostname.replace(/^www\./, "").toLowerCase() + path + (strict ? u.search : "");
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Bind open tabs to the favorites and pinned items they show, one tab per item:
+ * the exact URL first, then the same address give or take "www.", a trailing
+ * slash or the fragment, then the same page with other query parameters.
+ * Tabs and items already bound stay as they are. Runs on install, browser
+ * start and whenever a sidebar opens.
+ */
+export async function adoptAll() {
+  const [favorites, pins, bindings] = await Promise.all([getFavorites(), getPins(), getBindings()]);
+  const tabs = (await browser.tabs.query({ windowType: "normal" })).filter((t) => !bindings[t.id] && t.url);
+  const items = [...favorites, ...pins.filter((p) => p.type !== "folder")];
+  const bound = new Set(Object.values(bindings));
+  const passes = [(url) => url, (url) => matchKey(url, true), (url) => matchKey(url, false)];
+  for (const key of passes) {
+    for (const item of items) {
+      if (bound.has(item.id)) continue;
+      const want = key(item.url);
+      if (!want) continue;
+      // The tab used most recently wins when several show the same page.
+      const tab = tabs
+        .filter((t) => key(t.url) === want)
+        .reduce((a, b) => (a && (a.lastAccessed || 0) >= (b.lastAccessed || 0) ? a : b), null);
+      if (!tab) continue;
+      bound.add(item.id);
+      tabs.splice(tabs.indexOf(tab), 1);
+      await bind(tab.id, item.id);
+    }
+  }
+}
+
+/** Blank pages the add-on swaps or cancels shouldn't clog Cmd/Ctrl+Shift+T. */
+export async function forgetBlankClosedTabs() {
+  const closed = await browser.sessions.getRecentlyClosed({ maxResults: 25 }).catch(() => []);
+  for (const entry of closed) {
+    if (!entry.tab || !isNewTabUrl(entry.tab.url)) continue;
+    await browser.sessions.forgetClosedTab(entry.tab.windowId, entry.tab.sessionId).catch(() => {});
+  }
+}

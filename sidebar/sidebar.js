@@ -1,245 +1,251 @@
-/* global ArcFox */
-import { h, setIcon, syncChildren, showMenu, hideMenu, openDialog } from "./ui.js";
-import { createAddressBar } from "./address.js";
-import { createSpacesBar } from "./spaces.js";
+/* Sidebar: favorites, the bookmarks toolbar as pinned tabs (with folders) and the
+   window's open tabs. All state lives in storage and bookmarks (shared/store.js)
+   and in Firefox's tabs; this page only draws it. */
 
-const TAB_MIME = "application/x-arcfox-tab";
-const ITEM_MIME = "application/x-arcfox-item";
+import { h, setIcon, syncChildren, showMenu, openDialog, pickIcon, inlineRename } from "./ui.js";
+import * as store from "../shared/store.js";
+import { paintTheme, themeText } from "../shared/theme.js";
+import { pretty } from "../shared/suggest.js";
+import { getBadges, tabMenuFor } from "../shared/badges.js";
 
-const $ = (id) => document.getElementById(id);
 const els = {
-  favorites: $("favorites"),
-  spaceHead: $("space-head"),
-  spaceIcon: $("space-icon"),
-  spaceName: $("space-name"),
-  pinned: $("pinned"),
-  today: $("today"),
-  newTab: $("new-tab"),
-  clear: $("clear"),
+  favorites: document.getElementById("favorites"),
+  spaceHead: document.getElementById("space-head"),
+  spaceMore: document.getElementById("space-more"),
+  scroll: document.querySelector(".scroll"),
+  pinned: document.getElementById("pinned"),
+  dividerRow: document.querySelector(".divider-row"),
+  dockToday: document.getElementById("dock-today"),
+  today: document.getElementById("today"),
+  clear: document.getElementById("clear"),
+  tabCount: document.getElementById("tab-count"),
+  closeAll: document.getElementById("close-all"),
+  newTab: document.getElementById("new-tab"),
+  search: document.getElementById("search"),
+  searchClear: document.getElementById("search-clear"),
 };
+
+const S = {
+  windowId: null,
+  tabs: [],
+  favorites: [],
+  pins: [], // the bookmarks bar
+  bindings: {}, // tabId -> itemId
+  theme: {},
+  badges: new Map(), // tabId -> badges other extensions put on it
+  icons: {}, // itemId -> last favicon seen (Firefox has none for closed pages)
+};
+
+// A command bar sent somewhere: Firefox reports the new URL only once the page
+// commits, so until then the tab still looks like the (hidden) command bar.
+// The bar says where it's going; show the row with that, loading.
+const pendingNav = new Map(); // tabId -> label
+
+browser.runtime.onMessage.addListener((msg) => {
+  if (msg?.type !== "bookmarc:navigating" || !Number.isInteger(msg.tabId)) return;
+  pendingNav.set(msg.tabId, msg.label || "Loading…");
+  setTimeout(() => pendingNav.delete(msg.tabId) && refresh(), 20000);
+  refresh();
+});
 
 let themeDraft = null; // {tint, intensity} previewed by the theme dialog
+let renaming = false; // a title is being edited in place: hold re-renders until it's done
+let pendingRename = null; // a folder just created: rename it once its row is drawn
+let query = []; // the search field's words, lowercased; empty: no search
 
-const state = {
-  windowId: null,
-  private: false,
-  spaceId: null,
-  spaces: [],
-  favorites: [], // this space's favorites (its container's list)
-  favKey: "favorites",
-  pins: [], // pinned items of the current space
-  icons: {},
-  bound: new Map(), // itemId -> tab
-  tabItem: new Map(), // tabId -> itemId
-  tabSpace: new Map(), // tabId -> spaceId
-  badges: new Map(), // tabId -> badges other extensions put on it
-  tabs: [], // this window, sorted by index
+const activeTab = () => S.tabs.find((t) => t.active);
+const tabById = (id) => S.tabs.find((t) => t.id === id);
+const pinById = (id) => S.pins.find((p) => p.id === id);
+const tabsOf = (itemId) => S.tabs.filter((t) => S.bindings[t.id] === itemId);
+/** The open tab of a favorite / pinned item: the active one, else the most recent. */
+const boundTab = (itemId) =>
+  tabsOf(itemId).reduce((a, b) => (a && (a.active || (a.lastAccessed || 0) >= (b.lastAccessed || 0)) ? a : b), null);
+const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+const isMac = navigator.platform.startsWith("Mac");
+const isWebUrl = (url) => /^https?:\/\//i.test(url || "");
+
+/** Tabs that stand for a favorite or a pinned item show there, not among the open tabs. */
+function shownElsewhere(tab) {
+  const itemId = S.bindings[tab.id];
+  return !!itemId && (S.favorites.some((f) => f.id === itemId) || S.pins.some((p) => p.id === itemId));
+}
+
+/** An empty tab (Cmd+T, a fresh window): not listed, the "+" above the list stands for it. */
+// A tab opened from a link starts as about:blank too: that one is loading, not empty.
+const isBlank = (tab) =>
+  !pendingNav.has(tab.id) &&
+  (store.isNewTabUrl(tab.url) || ((!tab.url || tab.url === "about:blank") && tab.status !== "loading"));
+
+/** "Close Empty Tabs": the window's empty tabs, which the list doesn't show. */
+function closeEmptyTabsItem() {
+  const empty = S.tabs.filter((t) => isBlank(t) && !t.pinned).map((t) => t.id);
+  return {
+    label: empty.length > 1 ? `Close ${empty.length} Empty Tabs` : empty.length ? "Close Empty Tab" : "Close Empty Tabs",
+    disabled: !empty.length,
+    run: () => closeTabs(empty),
+  };
+}
+
+const todayTabs = () => S.tabs.filter((t) => !t.hidden && !shownElsewhere(t) && !isBlank(t));
+
+/** The pinned item's tab is on another page than the one that was pinned. */
+const isMoved = (item, tab) => !!tab && isWebUrl(tab.url) && tab.url !== item.url;
+
+// ---------- Pins tree ----------
+
+const isFolder = (p) => p?.type === "folder";
+
+function parentOf(p, pins = S.pins) {
+  return p.parent && pins.some((x) => x.id === p.parent && isFolder(x)) ? p.parent : null;
+}
+
+/** ids of `id` and everything inside it. */
+function subtree(pins, id) {
+  const out = new Set([id]);
+  let grew = true;
+  while (grew) {
+    grew = false;
+    for (const p of pins) if (!out.has(p.id) && out.has(parentOf(p, pins))) out.add(p.id), (grew = true);
+  }
+  return out;
+}
+
+/** An entry and everything inside it, in list order (copies, safe to change). */
+const blockOf = (pins, id) => {
+  const ids = subtree(pins, id);
+  return pins.filter((p) => ids.has(p.id)).map((p) => ({ ...p }));
 };
 
-const TODAY_FLOW = "todayFlow"; // storage.local: true = open tabs follow the whole pinned list (not docked)
-const PINNED_HEIGHT = "pinnedHeight"; // storage.local: px the pinned list may take while docked (unset: half the sidebar)
-
-const tileEls = new Map();
-const pinEls = new Map();
-const tabEls = new Map();
-let dragging = false;
-
-const space = () => state.spaces.find((s) => s.id === state.spaceId);
-const activeTab = () => state.tabs.find((t) => t.active) || null;
-const tabById = (id) => state.tabs.find((t) => t.id === id);
-
-function spaceOf(tab) {
-  const s = state.tabSpace.get(tab.id);
-  return s && state.spaces.some((x) => x.id === s) ? s : state.spaceId;
-}
-
-const PALETTE_URL = browser.runtime.getURL("palette/palette.html");
-
-/** The command bar already open in this space, if any. */
-function openCommandBar() {
-  return state.tabs.find(
-    (t) => !t.hidden && t.url?.startsWith(PALETTE_URL) && (state.private || spaceOf(t) === state.spaceId)
-  );
-}
-
-function newTabInSpace(url) {
-  // One command bar at a time: a second Cmd+T just goes back to it.
-  if (!url) {
-    const open = openCommandBar();
-    if (open) return browser.tabs.update(open.id, { active: true });
+/**
+ * Move `block` (an entry and its contents, in order) next to `targetId`:
+ * where = "before" | "after" | "into" | "end".
+ */
+function placeBlock(pins, block, targetId, where) {
+  const ids = new Set(block.map((p) => p.id));
+  const rest = pins.filter((p) => !ids.has(p.id));
+  const [head] = block;
+  const target = rest.find((p) => p.id === targetId);
+  if (!target || where === "end") {
+    delete head.parent;
+    return [...rest, ...block];
   }
-  // New tabs open at the top of the space's list, like Arc.
-  const create = state.private
-    ? browser.tabs.create({ windowId: state.windowId, active: true, ...(url ? { url } : {}) })
-    : ArcFox.topIndexOfSpace(state.windowId, state.spaceId).then((index) =>
-        ArcFox.createTabInSpace(state.windowId, space(), { url, index })
-      );
-  return create.then((tab) => {
-    schedule(true);
-    return tab;
-  });
-}
-
-/* ---------- Refresh scheduling ---------- */
-
-let scanDirty = true;
-let frame = 0;
-let running = false;
-let again = false;
-
-function schedule(scan = false) {
-  if (scan) scanDirty = true;
-  if (frame) return;
-  frame = requestAnimationFrame(() => {
-    frame = 0;
-    refresh();
-  });
-}
-
-async function refresh() {
-  if (state.windowId === null) return;
-  if (running) {
-    again = true;
-    return;
-  }
-  running = true;
-  try {
-    do {
-      again = false;
-      const scan = scanDirty;
-      scanDirty = false;
-      const t0 = performance.now();
-      // Pruning pings other extensions and waits for their answers, which is
-      // nobody's idea of a tab list: let it run on its own. Dropping a stale
-      // provider writes to session storage, which schedules another refresh.
-      ArcFox.pruneProviders().catch(() => {});
-      const [st, icons, allTabs, prefs, badges] = await Promise.all([
-        ArcFox.getState(),
-        ArcFox.getIconCache(),
-        browser.tabs.query({}).then((tabs) => tabs.filter((t) => !removedTabs.has(t.id))),
-        browser.storage.local.get(PINS_COLLAPSED),
-        ArcFox.getBadges(),
-      ]);
-      const tData = performance.now();
-      state.badges = badges;
-      collapsed = prefs[PINS_COLLAPSED] || {};
-      if (scan) {
-        const result = await ArcFox.scanTabs(allTabs, st);
-        state.tabItem = result.tabItem;
-        state.tabSpace = result.tabSpace;
-      }
-      state.spaceId = state.private ? null : await ArcFox.getWindowSpace(state.windowId, st);
-      state.spaces = st.spaces;
-      // Favorites of this space's container (Arc: per profile).
-      state.favKey = ArcFox.favKey(st.spaces.find((x) => x.id === state.spaceId));
-      state.favorites = state.private ? [] : st.favLists.get(state.favKey) || [];
-      state.pins = state.private ? [] : st.pins.get(state.spaceId) || [];
-      state.icons = icons;
-
-      const itemIds = new Set([...st.favorites, ...[...st.pins.values()].flat()].map((i) => i.id));
-      const byId = new Map(allTabs.map((t) => [t.id, t]));
-      state.bound = new Map();
-      for (const [tabId, itemId] of state.tabItem) {
-        const tab = byId.get(tabId);
-        if (tab && itemIds.has(itemId)) state.bound.set(itemId, tab);
-        else state.tabItem.delete(tabId);
-      }
-      for (const tabId of state.tabSpace.keys()) if (!byId.has(tabId)) state.tabSpace.delete(tabId);
-      state.tabs = allTabs.filter((t) => t.windowId === state.windowId).sort((a, b) => a.index - b.index);
-      const tScan = performance.now();
-      if (!dragging && !renaming) render();
-      // A refresh the eye can catch is a bug; say which part took the time.
-      const end = performance.now();
-      if (end - t0 > 50) {
-        const ms = (a, b) => Math.round(b - a);
-        console.debug(
-          `Arc: refresh ${ms(t0, end)}ms over ${allTabs.length} tabs ` +
-            `(data ${ms(t0, tData)}, bindings ${ms(tData, tScan)}, render ${ms(tScan, end)})`
-        );
-      }
-    } while (again);
-  } finally {
-    running = false;
-  }
-}
-
-/* ---------- Rendering ---------- */
-
-function render() {
-  document.body.classList.remove("booting");
-  if (state.private) return renderPrivate();
-  const sp = space();
-  // While the theme dialog is open it paints its own preview.
-  if (!themeDraft) ArcFox.paintSpace(sp);
-  els.spaceIcon.textContent = sp?.icon || "";
-  els.spaceIcon.hidden = !sp?.icon;
-  els.spaceHead.classList.toggle("has-icon", !!sp?.icon);
-  els.spaceName.textContent = sp?.name || "";
-
-  applyCollapsed();
-  renderFavorites();
-  renderPinned();
-  renderToday();
-  applySelection();
-  spacesBar.render(state);
-  address.update(activeTab());
-
-  const tab = activeTab();
-  $("back").disabled = !tab;
-  $("forward").disabled = !tab;
-}
-
-function renderFavorites() {
-  const activeId = activeTab()?.id;
-  const nodes = state.favorites.map((fav) => {
-    let el = tileEls.get(fav.id);
-    if (!el) {
-      el = h("button", { className: "tile", draggable: true, dataset: { item: fav.id } }, h("span", { className: "icon" }));
-      tileEls.set(fav.id, el);
+  let index;
+  if (where === "before") {
+    head.parent = parentOf(target, rest) || undefined;
+    index = rest.indexOf(target);
+  } else {
+    const inside = subtree(rest, target.id);
+    index = rest.reduce((last, p, i) => (inside.has(p.id) ? i : last), rest.indexOf(target)) + 1;
+    if (where === "into") {
+      head.parent = target.id;
+      target.open = true;
+    } else {
+      head.parent = parentOf(target, rest) || undefined;
     }
-    const tab = state.bound.get(fav.id);
-    el.classList.toggle("open", !!tab);
-    el.classList.toggle("active", !!tab && tab.id === activeId);
-    el.title = tab?.title || fav.title;
-    setIcon(el.firstChild, tab?.favIconUrl || state.icons[fav.id] || fav.icon, fav.url);
-    return el;
-  });
-  prune(tileEls, state.favorites.map((f) => f.id));
-  const empty = nodes.length === 0;
-  els.favorites.classList.toggle("empty", empty);
-  // No favorites yet: the zone stays hidden and only shows up while a tab is dragged.
-  els.favorites.classList.toggle("collapsed", empty);
-  syncChildren(els.favorites, empty ? favHint : nodes);
+  }
+  if (!head.parent) delete head.parent;
+  rest.splice(index, 0, ...block);
+  return rest;
 }
 
-const SVG_NS = "http://www.w3.org/2000/svg";
+const savePins = (pins) => store.savePins(pins);
+const updatePin = (id, change) => savePins(S.pins.map((p) => (p.id === id ? { ...p, ...change } : p)));
 
-const closeIcon = () => lucide(LUCIDE.x);
+// ---------- Rendering ----------
 
-/** favicon, mute, title, badges, close: the parts fillRow() updates. */
+const SVG = {
+  close: '<path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>',
+  more: '<circle cx="3.5" cy="8" r="1.3" fill="currentColor"/><circle cx="8" cy="8" r="1.3" fill="currentColor"/><circle cx="12.5" cy="8" r="1.3" fill="currentColor"/>',
+  folder:
+    '<path d="M2.5 4.5a1 1 0 0 1 1-1h3l1.5 1.5h4.5a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>',
+  folderOpen:
+    '<path d="M2.5 11.5v-7a1 1 0 0 1 1-1h3l1.5 1.5h4a1 1 0 0 1 1 1V7M2.5 11.5 4.3 7.7a1 1 0 0 1 .9-.6h8.6a.6.6 0 0 1 .5.8l-1.6 3.8a1 1 0 0 1-.9.6H3.2a.7.7 0 0 1-.7-.8z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>',
+};
+
+/** One of the icons above as an <svg> element (parsed, not innerHTML: the add-on linter flags that). */
+function svg(name) {
+  const doc = new DOMParser().parseFromString(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">${SVG[name]}</svg>`, "image/svg+xml");
+  return document.importNode(doc.documentElement, true);
+}
+
+/** Lucide icons: 24-grid, 2px round strokes. https://lucide.dev (ISC) */
+const LUCIDE = {
+  volume:
+    "M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.705.705 0 0 0 11 19.298zM16 9a5 5 0 0 1 0 6m3.364 3.364a9 9 0 0 0 0-12.728",
+  volumeOff:
+    "M11 4.702a.7.7 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.7.7 0 0 0 11 19.298zm5.5 9.798l5-5m-5 0l5 5",
+  // Badge icons other extensions can pick (see BADGE_ICONS in shared/badges.js).
+  bot: "M12 8V4H8M6 8h12a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2zM2 14h2M20 14h2M15 13v2M9 13v2",
+  sparkles:
+    "M11.017 2.814a1 1 0 0 1 1.966 0l1.051 5.558a2 2 0 0 0 1.594 1.594l5.558 1.051a1 1 0 0 1 0 1.966l-5.558 1.051a2 2 0 0 0-1.594 1.594l-1.051 5.558a1 1 0 0 1-1.966 0l-1.051-5.558a2 2 0 0 0-1.594-1.594l-5.558-1.051a1 1 0 0 1 0-1.966l5.558-1.051a2 2 0 0 0 1.594-1.594zM20 2v4M22 4h-4M2 20a2 2 0 1 0 4 0a2 2 0 1 0-4 0",
+  // Lucide's "pin" and "pin-off", joined into one path each.
+  pin: "M12 17v5M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z",
+  pinOff:
+    "M12 17v5M15 9.34V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H7.89M2 2l20 20M9 9v1.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h11",
+};
+
+function lucide(d) {
+  const el = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  el.setAttribute("viewBox", "0 0 24 24");
+  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  path.setAttribute("d", d);
+  path.setAttribute("fill", "none");
+  path.setAttribute("stroke", "currentColor");
+  path.setAttribute("stroke-width", "2");
+  path.setAttribute("stroke-linecap", "round");
+  path.setAttribute("stroke-linejoin", "round");
+  el.append(path);
+  return el;
+}
+
+const rows = new Map(); // "t<tabId>" | "i<itemId>" | "h<tabId>" (split half) | "s<splitViewId>" -> element
+let drawn = new Set(); // the keys of this render's rows; the rest are dropped after it
+
+function rowFor(key, build) {
+  let el = rows.get(key);
+  if (!el) rows.set(key, (el = build()));
+  drawn.add(key);
+  return el;
+}
+
+// Firefox clears favIconUrl while a tab navigates, which would swap the icon
+// for a letter tile and back on every load. Keep the last one for as long as
+// the tab stays on the same site.
+const lastIcon = new Map(); // tabId -> { icon, origin }
+
+function iconFor(tab) {
+  if (!tab) return null;
+  let origin = "";
+  try {
+    origin = new URL(tab.url || "").origin;
+  } catch {
+    // about:, blank, or a URL Firefox hasn't reported yet
+  }
+  if (tab.favIconUrl) {
+    lastIcon.set(tab.id, { icon: tab.favIconUrl, origin });
+    return tab.favIconUrl;
+  }
+  const kept = lastIcon.get(tab.id);
+  if (kept && (kept.origin === origin || !origin)) return kept.icon;
+  lastIcon.delete(tab.id);
+  return null;
+}
+
+/** favicon, mute, badges, title, badges, close: the parts fillRow() updates. */
 const rowParts = () => [
   h("span", { className: "favicon" }),
-  h("button", { className: "icon-btn audio" }),
+  h("button", { className: "icon-btn audio", hidden: true }),
   h("span", { className: "badges start" }),
   h("span", { className: "title" }),
   h("span", { className: "badges" }),
-  h("button", { className: "icon-btn close", title: "Close tab" }, closeIcon()),
+  h("button", { className: "icon-btn close", title: "Close tab" }, svg("close")),
 ];
-
-function makeRow(dataset) {
-  return h("li", { className: "tab", draggable: true, dataset }, ...rowParts());
-}
-
-/** Firefox split view: one row, one half per tab (like Arc). */
-function makeSplitRow() {
-  return h("li", { className: "tab split" });
-}
 
 function fillRow(el, tab, { title, url, icon }) {
   const [favicon, audio, startBadgesEl, titleEl, badgesEl] = el.children;
   el.classList.toggle("active", !!tab?.active);
   el.classList.toggle("discarded", !!tab?.discarded);
-  el.classList.toggle("loading", tab?.status === "loading" && !tab.discarded);
+  el.classList.toggle("loading", tab?.status === "loading" && !tab.discarded && !store.isNewTabUrl(url));
   if (titleEl.textContent !== title) titleEl.textContent = title;
   el.title = url ? `${title}\n${url}` : title;
   setIcon(favicon, icon, url);
@@ -251,7 +257,7 @@ function fillRow(el, tab, { title, url, icon }) {
     audio.replaceChildren(lucide(muted ? LUCIDE.volumeOff : LUCIDE.volume));
   }
   audio.title = muted ? "Unmute tab" : "Mute tab";
-  const badges = (tab && state.badges.get(tab.id)) || [];
+  const badges = (tab && S.badges.get(tab.id)) || [];
   fillBadges(startBadgesEl, badges.filter((b) => b.position === "start"));
   fillBadges(badgesEl, badges.filter((b) => b.position !== "start"));
 }
@@ -271,835 +277,516 @@ function fillBadges(el, badges) {
   );
 }
 
-/** Lucide icons: 24-grid, 2px round strokes. https://lucide.dev (ISC) */
-const LUCIDE = {
-  volume:
-    "M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.705.705 0 0 0 11 19.298zM16 9a5 5 0 0 1 0 6m3.364 3.364a9 9 0 0 0 0-12.728",
-  volumeOff:
-    "M11 4.702a.7.7 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.7.7 0 0 0 11 19.298zm5.5 9.798l5-5m-5 0l5 5",
-  x: "M18 6L6 18M6 6l12 12",
-  // Badge icons other extensions can pick (see BADGE_ICONS in shared/store.js).
-  bot: "M12 8V4H8M6 8h12a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2zM2 14h2M20 14h2M15 13v2M9 13v2",
-  sparkles:
-    "M11.017 2.814a1 1 0 0 1 1.966 0l1.051 5.558a2 2 0 0 0 1.594 1.594l5.558 1.051a1 1 0 0 1 0 1.966l-5.558 1.051a2 2 0 0 0-1.594 1.594l-1.051 5.558a1 1 0 0 1-1.966 0l-1.051-5.558a2 2 0 0 0-1.594-1.594l-5.558-1.051a1 1 0 0 1 0-1.966l5.558-1.051a2 2 0 0 0 1.594-1.594zM20 2v4M22 4h-4M2 20a2 2 0 1 0 4 0a2 2 0 1 0-4 0",
-};
-
-function lucide(d) {
-  const svg = document.createElementNS(SVG_NS, "svg");
-  svg.setAttribute("viewBox", "0 0 24 24");
-  const path = document.createElementNS(SVG_NS, "path");
-  path.setAttribute("d", d);
-  path.setAttribute("fill", "none");
-  path.setAttribute("stroke", "currentColor");
-  path.setAttribute("stroke-width", "2");
-  path.setAttribute("stroke-linecap", "round");
-  path.setAttribute("stroke-linejoin", "round");
-  svg.append(path);
-  return svg;
-}
-
-// Lucide's "pin" and "pin-off" (ISC license), joined into one path each.
-const PIN = "M12 17v5M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z";
-const PIN_OFF =
-  "M12 17v5M15 9.34V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H7.89M2 2l20 20M9 9v1.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h11";
-
-/**
- * The divider's pin. Docked (default): the pinned list scrolls on its own so
- * the open tabs keep their place in view. Not docked: they sit below the
- * whole pinned list and the sidebar scrolls.
- */
-function applyTodayFlow(flow) {
-  document.body.classList.toggle("today-flow", flow);
-  const btn = $("dock-today");
-  btn.replaceChildren(lucide(flow ? PIN_OFF : PIN));
-  btn.title = flow ? "Keep open tabs in view (pinned tabs scroll on their own)" : "Let open tabs follow all pinned tabs";
-  btn.setAttribute("aria-pressed", String(!flow));
-}
-
-applyTodayFlow(false);
-browser.storage.local.get(TODAY_FLOW).then((r) => applyTodayFlow(!!r[TODAY_FLOW]));
-$("dock-today").addEventListener("click", () => {
-  const flow = !document.body.classList.contains("today-flow");
-  applyTodayFlow(flow);
-  browser.storage.local.set({ [TODAY_FLOW]: flow });
-});
-
-/* ---------- Dragging the divider ---------- */
-
-function applyPinnedHeight(px) {
-  if (Number.isFinite(px)) document.documentElement.style.setProperty("--pinned-height", `${px}px`);
-  else document.documentElement.style.removeProperty("--pinned-height");
-}
-
-browser.storage.local.get(PINNED_HEIGHT).then((r) => applyPinnedHeight(r[PINNED_HEIGHT]));
-
-/**
- * While docked, dragging the divider moves where the pinned list ends (it
- * scrolls on its own above). It stops at the list's full length and leaves
- * room for a few open tabs. Double-click: back to the default.
- */
-{
-  const row = document.querySelector(".divider-row");
-  const canResize = () => !document.body.classList.contains("today-flow") && !document.body.classList.contains("pins-collapsed");
-  row.addEventListener("pointerdown", (e) => {
-    if (e.button !== 0 || e.target.closest("button") || !canResize()) return;
-    e.preventDefault();
-    const pinned = els.pinned;
-    const startY = e.clientY;
-    const startH = pinned.getBoundingClientRect().height;
-    const most = () => Math.min(pinned.scrollHeight, document.querySelector(".scroll").clientHeight - 120);
-    let height = startH;
-    row.setPointerCapture(e.pointerId);
-    row.classList.add("resizing");
-    const move = (ev) => {
-      height = Math.round(Math.max(40, Math.min(most(), startH + ev.clientY - startY)));
-      applyPinnedHeight(height);
-    };
-    const end = () => {
-      row.classList.remove("resizing");
-      row.removeEventListener("pointermove", move);
-      row.removeEventListener("pointerup", end);
-      row.removeEventListener("pointercancel", end);
-      if (height !== startH) browser.storage.local.set({ [PINNED_HEIGHT]: height });
-    };
-    row.addEventListener("pointermove", move);
-    row.addEventListener("pointerup", end);
-    row.addEventListener("pointercancel", end);
-  });
-  row.addEventListener("dblclick", (e) => {
-    if (e.target.closest("button") || !canResize()) return;
-    applyPinnedHeight(undefined);
-    browser.storage.local.remove(PINNED_HEIGHT);
-  });
-}
-
-// Lucide's "folder" and "folder-open" (ISC license, like the icons above),
-// plus fill shapes under the outline for Arc's tinted look.
-const FOLDER_CLOSED =
-  "M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z";
-const FOLDER_OPEN =
-  "m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2";
-const FOLDER_OPEN_BACK =
-  "M2 18V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2H9.24a2 2 0 0 0-1.74 1.1L6 14Z";
-const FOLDER_OPEN_FRONT =
-  "M6 14l1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2Z";
-
-/** Arc-style folder icon: Lucide's outline over a tint of the same color. */
-function folderSvg(open) {
-  const svg = document.createElementNS(SVG_NS, "svg");
-  svg.setAttribute("viewBox", "0 0 24 24");
-  const fills = open ? [[FOLDER_OPEN_BACK, "0.12"], [FOLDER_OPEN_FRONT, "0.3"]] : [[FOLDER_CLOSED, "0.2"]];
-  for (const [d, opacity] of fills) {
-    const path = document.createElementNS(SVG_NS, "path");
-    path.setAttribute("d", d);
-    path.setAttribute("fill", "currentColor");
-    path.setAttribute("fill-opacity", opacity);
-    svg.append(path);
-  }
-  svg.append(lucide(open ? FOLDER_OPEN : FOLDER_CLOSED).firstChild);
-  return svg;
-}
-
 /** Indent a pinned row by its folder depth (0 = top level). */
-function setLevel(el, parent, depth) {
-  el.dataset.parent = parent || "";
+function setLevel(el, depth) {
   el.dataset.depth = String(depth);
   el.classList.toggle("child", depth > 0);
   el.style.setProperty("--depth", depth);
 }
 
-/** The pinned item's tab is on another page than the one that was pinned. */
-const isMoved = (item, tab) => !!tab && ArcFox.isFavoritable(tab.url) && tab.url !== item.url;
+function fillTab(el, tab) {
+  const pending = pendingNav.get(tab.id);
+  const url = pending ? "" : tab.url || "";
+  const title = pending || tab.title || (tab.status === "loading" ? "Loading…" : pretty(url)) || "New Tab";
+  fillRow(el, tab, { title, url, icon: pending ? null : iconFor(tab) });
+  if (pending) el.classList.add("loading");
+  return el;
+}
 
-function pinRow(item, parent, depth) {
-  let el = pinEls.get(item.id);
-  if (!el || el.classList.contains("folder")) {
-    el = makeRow({ item: item.id });
-    el.classList.add("item");
-    pinEls.set(item.id, el);
+function tabRow(tab) {
+  return fillTab(rowFor("t" + tab.id, () => h("li", { className: "tab", draggable: true, dataset: { tab: tab.id } }, ...rowParts())), tab);
+}
+
+/** Firefox split view: one row, one half per tab (like Arc). Drops before/after it use its first/last tab. */
+function splitRow(a, b) {
+  const el = rowFor("s" + a.splitViewId, () => h("li", { className: "tab split" }));
+  el.dataset.tab = a.id;
+  el.dataset.lastTab = b.id;
+  el.classList.toggle("active", a.active || b.active);
+  const half = (tab) => fillTab(rowFor("h" + tab.id, () => h("span", { className: "half", draggable: true, dataset: { tab: tab.id } }, ...rowParts())), tab);
+  syncChildren(el, [half(a), half(b)]);
+  return el;
+}
+
+// splitViewId is -1 (tabs.SPLIT_VIEW_ID_NONE) when the tab isn't in a Firefox split view.
+const inSplit = (tab) => tab.splitViewId !== undefined && tab.splitViewId !== -1;
+
+/** The open-tab rows: a split view's two tabs share one. */
+function todayRows(tabs) {
+  const out = [];
+  for (let i = 0; i < tabs.length; i++) {
+    const tab = tabs[i];
+    const next = tabs[i + 1];
+    if (inSplit(tab) && next && next.splitViewId === tab.splitViewId) {
+      out.push(splitRow(tab, next));
+      i++;
+    } else out.push(tabRow(tab));
   }
-  el.dataset.sel = `i:${item.id}`;
-  setLevel(el, parent, depth);
-  const tab = state.bound.get(item.id);
+  return out;
+}
+
+function itemRow(item, depth) {
+  const el = rowFor("i" + item.id, () =>
+    h("li", { className: "tab item", draggable: true, dataset: { item: item.id } }, ...rowParts())
+  );
+  setLevel(el, depth);
+  const tab = boundTab(item.id);
   el.classList.toggle("open", !!tab);
-  // Like Arc: once the tab has left the pinned page, the row reads "<icon> / <name>",
+  // Once the tab has left the pinned page, the row reads "<icon> / <name>",
   // and clicking the icon goes back to the pinned page. The name stays as it was.
   const moved = isMoved(item, tab);
   el.classList.toggle("moved", moved);
-  // Arc shows the user's name or the saved title for pinned items; fall back to the live tab title.
   fillRow(el, tab, {
-    title: item.name || item.title || tab?.title || item.url,
+    title: item.name || item.title || tab?.title || pretty(item.url),
     url: tab?.url || item.url,
-    icon: tab?.favIconUrl || state.icons[item.id] || item.icon,
+    icon: iconFor(tab) || S.icons[item.id],
   });
   el.querySelector(".favicon").title = moved ? `Back to ${item.name || item.title || item.url}` : "";
+  el.querySelector(".close").title = "Close tab (stays pinned)";
   return el;
 }
 
-function folderRow(folder, parent, depth) {
-  let el = pinEls.get(folder.id);
-  if (!el || !el.classList.contains("folder")) {
-    el = h(
+/** `open`: shown open (a search opens the folders its hits are in, without saving that). */
+function folderRow(folder, depth, open = folder.open) {
+  const el = rowFor("i" + folder.id, () =>
+    h(
       "li",
       { className: "tab folder", draggable: true, dataset: { item: folder.id } },
-      h("span", { className: "favicon folder-icon" }),
+      h("span", { className: "folder-icon" }),
       h("span", { className: "title" }),
-      h("span", { className: "folder-count" })
-    );
-    pinEls.set(folder.id, el);
+      h("button", { className: "icon-btn folder-more", title: "Folder options" }, svg("more"))
+    )
+  );
+  setLevel(el, depth);
+  const [icon, title] = el.children;
+  const kind = folder.icon ? `emoji:${folder.icon}` : open ? "folderOpen" : "folder";
+  if (icon.dataset.kind !== kind) {
+    icon.dataset.kind = kind;
+    icon.replaceChildren(folder.icon ? h("span", { className: "folder-emoji" }, folder.icon) : svg(kind));
   }
-  el.dataset.sel = `i:${folder.id}`;
-  setLevel(el, parent, depth);
-  el.classList.toggle("expanded", !!folder.open);
-  const icon = el.querySelector(".folder-icon");
-  const shape = folder.icon ? `emoji:${folder.icon}` : folder.open ? "open" : "closed";
-  if (icon.dataset.shape !== shape) {
-    icon.dataset.shape = shape;
-    if (folder.icon) icon.replaceChildren(h("span", { className: "folder-emoji" }, folder.icon));
-    else icon.replaceChildren(folderSvg(folder.open));
-  }
-  const title = el.querySelector(".title");
-  if (title && title.textContent !== folder.name) title.textContent = folder.name;
+  el.classList.toggle("expanded", !!open);
+  title.textContent = folder.name;
   el.title = folder.name;
-  // Collapsed: how many of its pins (at any depth) have an open tab.
-  const inside = folder.open ? new Set() : ArcFox.descendantIds(state.pins, folder.id);
-  const openTabs = [...inside].filter((id) => state.bound.has(id)).length;
-  const count = el.querySelector(".folder-count");
-  count.textContent = openTabs ? String(openTabs) : "";
-  count.hidden = !openTabs;
-  count.title = openTabs ? `${plural(openTabs, "open tab")} in this folder` : "";
   return el;
 }
 
-function renderPinned() {
-  const folderIds = new Set(state.pins.filter(ArcFox.isFolder).map((f) => f.id));
-  const nodes = [];
-  const seen = new Set(); // guards against a parent loop in damaged data
-  const add = (item, parent, depth) => {
-    if (seen.has(item.id)) return;
-    seen.add(item.id);
-    if (!ArcFox.isFolder(item)) return nodes.push(pinRow(item, parent, depth));
-    nodes.push(folderRow(item, parent, depth));
-    if (item.open) for (const child of state.pins) if (child.parent === item.id) add(child, item.id, depth + 1);
+// ---------- Search ----------
+
+/** Every word of the search is in `text` (title and URL). */
+const matches = (...texts) => {
+  const hay = texts.filter(Boolean).join(" ").toLowerCase();
+  return query.every((w) => hay.includes(w));
+};
+
+/**
+ * What a search shows of the pinned list: the hits, everything inside a folder
+ * whose name is a hit, and the folders around them (shown open). null: no search.
+ */
+function searchHits() {
+  if (!query.length) return null;
+  const shown = new Set();
+  for (const p of S.pins) {
+    const hit = isFolder(p) ? matches(p.name) : matches(p.name, p.title, p.url);
+    if (!hit) continue;
+    for (const id of isFolder(p) ? subtree(S.pins, p.id) : [p.id]) shown.add(id);
+    // ...and the folders it's in.
+    for (let up = parentOf(p); up; up = parentOf(pinById(up))) shown.add(up);
+  }
+  return shown;
+}
+
+/**
+ * The pinned rows on screen. Like Arc, folding something away keeps its open
+ * tabs in view: a collapsed folder lists the pins inside it (at any depth) that
+ * have a tab open, right below it; with "Bookmarks" folded, only those pins
+ * show at all. A search shows its hits instead, folders opened.
+ */
+function pinnedRows() {
+  const hits = searchHits();
+  const out = [];
+  /** The pins inside `folderId`, at any depth, that have an open tab, in list order. */
+  const openInside = (folderId) => S.pins.filter((p) => !isFolder(p) && p.id !== folderId && subtree(S.pins, folderId).has(p.id) && boundTab(p.id));
+  const walk = (parent, depth) => {
+    for (const p of S.pins.filter((x) => parentOf(x) === parent)) {
+      if (hits && !hits.has(p.id)) continue;
+      if (isFolder(p)) {
+        const open = hits ? true : p.open;
+        out.push(folderRow(p, depth, open));
+        if (open) walk(p.id, depth + 1);
+        else for (const item of openInside(p.id)) out.push(itemRow(item, depth + 1));
+      } else {
+        out.push(itemRow(p, depth));
+      }
+    }
   };
-  // Items whose folder is gone show at the top level.
-  for (const item of state.pins) if (!item.parent || !folderIds.has(item.parent)) add(item, "", 0);
-  prune(pinEls, state.pins.map((i) => i.id));
-  syncChildren(els.pinned, nodes);
-  if (pendingRename && pinEls.has(pendingRename)) {
+  if (pinsCollapsed && !hits) {
+    for (const p of S.pins) if (!isFolder(p) && boundTab(p.id)) out.push(itemRow(p, 0));
+  } else walk(null, 0);
+  return out;
+}
+
+/** The open tabs on screen: all of them, or the search's hits. */
+const shownTodayTabs = () => (query.length ? todayTabs().filter((t) => matches(t.title, t.url)) : todayTabs());
+
+// ---------- Folder colors ----------
+
+/**
+ * A colored folder gets a rounded area behind its row and every row shown
+ * below it (its contents, or its open tabs while collapsed). The areas sit in
+ * one layer under the rows, measured from them; a subfolder's own color is an
+ * area inside its parent's, inset by its indent.
+ */
+const areaLayer = h("li", { className: "areas", role: "presentation" });
+
+function layoutAreas() {
+  const shown = [...els.pinned.querySelectorAll(".tab")];
+  const areas = [];
+  shown.forEach((el, i) => {
+    const folder = el.classList.contains("folder") && pinById(el.dataset.item);
+    if (!folder?.color) return;
+    const depth = Number(el.dataset.depth || 0);
+    let last = i;
+    while (last + 1 < shown.length && Number(shown[last + 1].dataset.depth || 0) > depth) last++;
+    const top = el.offsetTop;
+    const bottom = shown[last].offsetTop + shown[last].offsetHeight;
+    areas.push(
+      h("span", {
+        className: "area",
+        style: { top: `${top}px`, height: `${bottom - top}px`, left: `calc(${depth} * var(--indent))`, "--c": folder.color },
+      })
+    );
+  });
+  areaLayer.replaceChildren(...areas);
+}
+
+// Row heights change with Sizing, fonts and the panel's width: measure again.
+new ResizeObserver(() => layoutAreas()).observe(els.pinned);
+
+const FOLDER_COLORS = ["#f6d2d8", "#fbe3cf", "#f7e7c6", "#dcebd5", "#d9eeeb", "#d6e6f2", "#e3dcf2", "#e8e0d5"];
+
+/** "Set Color…": a swatch, a color of one's own (previewed while picking), or none. */
+async function setFolderColor(folder) {
+  const before = folder.color || "";
+  const preview = (color) => {
+    const shown = pinById(folder.id);
+    if (shown) shown.color = color;
+    layoutAreas();
+  };
+  const result = await openDialog((close) =>
+    h(
+      "form",
+      { className: "dialog-card", onsubmit: (e) => e.preventDefault() },
+      h("h2", {}, "Folder Color"),
+      h(
+        "div",
+        { className: "color-grid" },
+        FOLDER_COLORS.map((c) =>
+          h("button", {
+            type: "button",
+            className: `color-swatch${before === c ? " selected" : ""}`,
+            title: c,
+            style: { "--c": c },
+            onclick: () => close(c),
+          })
+        )
+      ),
+      h(
+        "label",
+        { className: "field" },
+        "Custom color",
+        h("input", {
+          type: "color",
+          value: before || FOLDER_COLORS[5],
+          oninput: (e) => preview(e.target.value),
+          onchange: (e) => close(e.target.value),
+        })
+      ),
+      h(
+        "div",
+        { className: "actions" },
+        before && h("button", { type: "button", className: "reset", onclick: () => close("") }, "No Color"),
+        h("button", { type: "button", dataset: { cancel: "" }, onclick: () => close(null) }, "Cancel")
+      )
+    )
+  );
+  if (result === null || result === before) {
+    preview(before);
+    return;
+  }
+  await updatePin(folder.id, { color: result });
+}
+
+const tiles = new Map(); // favorite id -> <button>
+
+function renderFavorites() {
+  const nodes = S.favorites.map((fav) => {
+    let el = tiles.get(fav.id);
+    if (!el) tiles.set(fav.id, (el = h("button", { className: "tile", draggable: true, dataset: { item: fav.id } }, h("span", { className: "icon" }))));
+    const tab = boundTab(fav.id);
+    el.classList.toggle("open", !!tab);
+    el.classList.toggle("active", !!tab?.active);
+    el.title = tab?.title || fav.title;
+    setIcon(el.firstChild, iconFor(tab) || S.icons[fav.id], fav.url);
+    return el;
+  });
+  for (const id of tiles.keys()) if (!S.favorites.some((f) => f.id === id)) tiles.delete(id);
+  const empty = nodes.length === 0;
+  els.favorites.classList.toggle("empty", empty);
+  els.favorites.classList.toggle("collapsed", empty);
+  syncChildren(els.favorites, empty ? [h("span", { className: "fav-drop-text" }, "Drop here to add a favorite")] : nodes);
+}
+
+function render() {
+  if (renaming) return; // refresh() runs again when the rename ends
+  // While the theme dialog is open it paints its own preview.
+  if (!themeDraft) paintTheme(S.theme);
+  const pinned = pinnedRows();
+  syncChildren(els.pinned, [areaLayer, ...pinned]);
+  layoutAreas();
+  const today = shownTodayTabs();
+  syncChildren(els.today, todayRows(today));
+  document.body.classList.toggle("searching", query.length > 0);
+  document.body.classList.toggle("no-hits", query.length > 0 && !pinned.length && !today.length);
+  const live = new Set([...S.tabs.map((t) => "t" + t.id), ...S.pins.map((p) => "i" + p.id)]);
+  for (const key of rows.keys()) if (!drawn.has(key)) rows.delete(key);
+  drawn = new Set();
+  for (const key of selection) if (!live.has(key)) selection.delete(key);
+  applySelection();
+  renderFavorites();
+  renderStatus();
+  document.body.classList.toggle("pins-collapsed", pinsCollapsed);
+  document.body.classList.remove("booting");
+  if (pendingRename && rows.has("i" + pendingRename)) {
     const id = pendingRename;
     pendingRename = null;
     startRename(id);
   }
 }
 
-// splitViewId is -1 (tabs.SPLIT_VIEW_ID_NONE) when the tab isn't in a Firefox split view.
-/**
- * A blank "New Tab": Firefox/Arc new-tab pages, the command bar, or an
- * about:blank tab that isn't on its way somewhere — a tab opened from a link
- * starts blank too, and that one should show as loading, not as "New Tab".
- */
-const isBlankTab = (tab) =>
-  ArcFox.isNewTabUrl(tab.url) || ((!tab.url || tab.url === "about:blank") && tab.status !== "loading");
+/** The window's open tabs, as the status bar counts them: empty ones don't count, as in the list. */
+const openTabs = () => S.tabs.filter((t) => !t.hidden && !isBlank(t));
 
-const inSplit = (tab) => tab.splitViewId !== undefined && tab.splitViewId !== -1;
+/** The status bar: how many tabs the window has open. */
+function renderStatus() {
+  const open = openTabs();
+  const pinned = open.filter(shownElsewhere).length;
+  els.tabCount.textContent = plural(open.length, "tab") + (pinned ? ` · ${pinned} pinned` : "");
+  if (!closeAllArmed) els.closeAll.disabled = !open.length;
+}
 
-// Firefox clears favIconUrl while a tab navigates, which would swap the icon
-// for a letter tile and back on every load. Keep the last one for as long as
-// the tab stays on the same site.
-const lastIcon = new Map(); // tabId -> { icon, origin }
+// ---------- Loading ----------
 
-function iconFor(tab) {
-  let origin = "";
-  try {
-    origin = new URL(tab.url || "").origin;
-  } catch {
-    // about:, blank, or a URL Firefox hasn't reported yet
+let loading = null;
+let again = false;
+
+async function load() {
+  const [tabs, favorites, pins, bindings, theme, badges, icons] = await Promise.all([
+    browser.tabs.query({ windowId: S.windowId }),
+    store.getFavorites(),
+    store.getPins(),
+    store.getBindings(),
+    store.getTheme(),
+    getBadges(),
+    store.getIconCache(),
+  ]);
+  // A command bar that has arrived somewhere is an ordinary tab again.
+  for (const tab of tabs) if (pendingNav.has(tab.id) && tab.url && !store.isNewTabUrl(tab.url) && tab.url !== "about:blank") pendingNav.delete(tab.id);
+  Object.assign(S, { tabs, favorites, pins, bindings, theme, badges, icons });
+  render();
+}
+
+/** Reload everything, coalescing bursts of events into one pass. (A timer, not
+    requestAnimationFrame: that pauses while the panel is covered.) */
+function refresh() {
+  if (loading) {
+    again = true;
+    return;
   }
-  if (tab.favIconUrl) {
-    lastIcon.set(tab.id, { icon: tab.favIconUrl, origin });
-    return tab.favIconUrl;
-  }
-  const kept = lastIcon.get(tab.id);
-  if (kept && (kept.origin === origin || !origin)) return kept.icon;
-  lastIcon.delete(tab.id);
-  return null;
-}
-
-function tabEl(tab, make) {
-  let el = tabEls.get(tab.id);
-  if (!el || el.matches("li") !== (make === makeRow)) {
-    el = make === makeRow ? makeRow({ tab: tab.id }) : h("span", { className: "half", draggable: true, dataset: { tab: tab.id } }, ...rowParts());
-    tabEls.set(tab.id, el);
-  }
-  el.dataset.sel = `t:${tab.id}`;
-  // Blank tabs (Cmd+T, command bar) look like the "+ New Tab" row — unless the
-  // command bar has just sent one somewhere.
-  const pending = pendingNav.get(tab.id);
-  const blank = !pending && isBlankTab(tab);
-  el.classList.toggle("blank", blank);
-  const loadingTitle = tab.status === "loading" ? "Loading…" : tab.url;
-  const title = blank ? "New Tab" : pending?.label || tab.title || loadingTitle;
-  fillRow(el, tab, { title, url: pending ? "" : tab.url, icon: pending ? null : iconFor(tab) });
-  if (blank) el.classList.remove("loading"); // a blank row never spins
-  if (pending) el.classList.add("loading"); // ...but a tab on its way does
-  if (blank) {
-    const box = el.querySelector(".favicon");
-    if (box.dataset.src !== "plus") {
-      box.dataset.src = "plus";
-      box.replaceChildren(h("span", { className: "plus" }, "+"));
-    }
-  }
-  return el;
-}
-
-/** A blank tab (the command bar, a new-tab page) that "+ New Tab" stands for instead of a row of its own. */
-const isNewTabRow = (tab) => !pendingNav.has(tab.id) && !inSplit(tab) && isBlankTab(tab);
-
-function renderToday() {
-  const inSpace = state.tabs.filter(
-    (t) =>
-      !state.tabItem.has(t.id) &&
-      !doomedTabs.has(t.id) &&
-      (preSwapTabs.has(t.id) || state.private || spaceOf(t) === state.spaceId)
-  );
-  // Like Arc, a new tab has no row until it goes somewhere: "+ New Tab" shows
-  // as the active row while it's open.
-  const tabs = inSpace.filter((t) => !isNewTabRow(t));
-  els.newTab.classList.toggle("active", inSpace.some((t) => t.active && isNewTabRow(t)));
-  // A tab Firefox just made sits at the end of its list and has no space yet;
-  // draw it where Arc is about to put it so the row never moves.
-  tabs.sort((a, b) => (preSwapTabs.has(b.id) ? 1 : 0) - (preSwapTabs.has(a.id) ? 1 : 0));
-  const all = tabs;
-  // A lone blank tab has nothing to close into: no ✕ on it.
-  els.today.classList.toggle("only-blank", all.length === 1 && isBlankTab(all[0]));
-  const nodes = [];
-  const splitKeys = new Set();
-  for (let i = 0; i < tabs.length; i++) {
-    const tab = tabs[i];
-    const next = tabs[i + 1];
-    if (inSplit(tab) && next && next.splitViewId === tab.splitViewId) {
-      const key = `split:${tab.splitViewId}`;
-      splitKeys.add(key);
-      let row = tabEls.get(key);
-      if (!row) tabEls.set(key, (row = makeSplitRow()));
-      // Drops before/after the row use its first/last tab.
-      row.dataset.tab = tab.id;
-      row.dataset.lastTab = next.id;
-      row.classList.toggle("active", tab.active || next.active);
-      syncChildren(row, [tabEl(tab, null), tabEl(next, null)]);
-      nodes.push(row);
-      i++;
-    } else {
-      nodes.push(tabEl(tab, makeRow));
-    }
-  }
-  prune(tabEls, [...state.tabs.map((t) => t.id), ...splitKeys]);
-  syncChildren(els.today, nodes);
-}
-
-function prune(map, keep) {
-  const ids = new Set(keep);
-  for (const id of map.keys()) if (!ids.has(id)) map.delete(id);
-}
-
-const favHint = [h("span", { className: "fav-drop-text" }, "Drop to add to Favorites")];
-
-/** Private window: just the tab list (Arc's Incognito sidebar). */
-function renderPrivate() {
-  document.body.classList.remove("booting");
-  document.documentElement.style.setProperty("--space", ArcFox.COLORS.purple);
-  document.documentElement.style.removeProperty("--tint");
-  delete document.documentElement.dataset.text;
-  els.spaceName.textContent = "Private window";
-  els.spaceIcon.hidden = true;
-  els.spaceHead.classList.remove("has-icon");
-  renderToday();
-  applySelection();
-  address.update(activeTab());
-  $("back").disabled = !activeTab();
-  $("forward").disabled = !activeTab();
-}
-
-/* ---------- Modules ---------- */
-
-const address = createAddressBar({
-  windowId: () => state.windowId,
-  activeTab,
-  newTab: newTabInSpace,
-  container: () => space()?.container || null,
-});
-
-const spacesBar = createSpacesBar({
-  el: $("spaces"),
-  windowId: () => state.windowId,
-  spaceId: () => state.spaceId,
-  refresh: () => schedule(true),
-  accepts: (e) => e.dataTransfer.types.includes(TAB_MIME) || e.dataTransfer.types.includes(ITEM_MIME),
-  onDrop: async (spaceId, dt) => {
-    const itemId = dt.getData(ITEM_MIME);
-    if (itemId) await ArcFox.moveItem(itemId, ArcFox.pinKey(spaceId));
-    else {
-      const data = readTabData(dt);
-      if (data) await ArcFox.moveTabToSpace(data.tabId, spaceId);
-    }
-    schedule(true);
-  },
-});
-
-/* ---------- Toolbar ---------- */
-
-$("back").addEventListener("click", () => activeTab() && browser.tabs.goBack(activeTab().id).catch(() => {}));
-$("forward").addEventListener("click", () => activeTab() && browser.tabs.goForward(activeTab().id).catch(() => {}));
-$("reload").addEventListener("click", (e) => {
-  const tab = activeTab();
-  if (tab) browser.tabs.reload(tab.id, { bypassCache: e.shiftKey });
-});
-
-/** Close a tab; closing the last one of this space leaves a blank tab, so the window stays. */
-async function closeTab(tabId) {
-  const rest = state.tabs.filter((t) => t.id !== tabId && spaceOf(t) === state.spaceId);
-  if (!rest.length) await newTabInSpace();
-  await browser.tabs.remove(tabId);
-}
-
-/* ---------- Selection (Shift/Cmd-click), like Arc ---------- */
-
-const selection = new Set(); // "i:<itemId>" (pinned items, folders) / "t:<tabId>" (tabs)
-let anchor = null;
-let pendingRename = null;
-const isMac = navigator.platform.startsWith("Mac");
-
-function applySelection() {
-  for (const el of document.querySelectorAll("[data-sel]")) el.classList.toggle("selected", selection.has(el.dataset.sel));
-}
-
-function clearSelection() {
-  if (!selection.size) return;
-  selection.clear();
-  applySelection();
-}
-
-/** Shift = range, Cmd (Ctrl elsewhere) = toggle. Returns true if the click was a selection click. */
-function handleSelectClick(e, el) {
-  const toggle = isMac ? e.metaKey : e.ctrlKey;
-  if (!el?.dataset.sel || !(e.shiftKey || toggle)) {
-    clearSelection();
-    if (el?.dataset.sel) anchor = el.dataset.sel;
-    return false;
-  }
-  e.preventDefault();
-  const key = el.dataset.sel;
-  if (e.shiftKey) {
-    const keys = [...document.querySelectorAll("#pinned [data-sel], #today [data-sel]")].map((x) => x.dataset.sel);
-    const start = anchor ?? (activeTab() && `t:${activeTab().id}`);
-    const a = keys.indexOf(start);
-    const b = keys.indexOf(key);
-    selection.clear();
-    if (a >= 0 && b >= 0) for (let i = Math.min(a, b); i <= Math.max(a, b); i++) selection.add(keys[i]);
-    else selection.add(key);
-  } else {
-    if (selection.has(key)) selection.delete(key);
-    else selection.add(key);
-    anchor = key;
-  }
-  applySelection();
-  return true;
-}
-
-document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") clearSelection();
-});
-
-const pinById = (id) => state.pins.find((i) => i.id === id);
-const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
-
-/** Arc's menu for several selected rows. */
-function selectionMenu() {
-  const keys = [...selection];
-  const pickedIds = keys.filter((k) => k.startsWith("i:")).map((k) => k.slice(2)).filter((id) => pinById(id));
-  const itemIds = pickedIds.filter((id) => !ArcFox.isFolder(pinById(id)));
-  const tabIds = keys.filter((k) => k.startsWith("t:")).map((k) => Number(k.slice(2))).filter((id) => tabById(id));
-  const links = [...itemIds.map((id) => state.bound.get(id)?.url || pinById(id)?.url), ...tabIds.map((id) => tabById(id).url)].filter(Boolean);
-  const openTabs = [...itemIds.map((id) => state.bound.get(id)?.id).filter(Boolean), ...tabIds];
-  const n = pickedIds.length + tabIds.length;
-  return [
-    links.length && { label: "Copy Links", run: () => navigator.clipboard.writeText(links.join("\n")) },
-    "-",
-    n && {
-      label: `New Folder with ${plural(n, "Item")}`,
-      run: async () => {
-        const folder = await ArcFox.createFolder(state.spaceId, { itemIds: pickedIds, tabIds });
-        clearSelection();
-        pendingRename = folder.id;
-      },
-    },
-    openTabs.length && { label: `Close ${plural(openTabs.length, "Tab")}`, run: () => browser.tabs.remove(openTabs).then(clearSelection) },
-    itemIds.length && {
-      label: itemIds.length === 1 ? "Remove Pin" : "Remove Pins",
-      danger: true,
-      run: async () => {
-        for (const id of itemIds) await ArcFox.removeItem(id, state.spaceId);
-        clearSelection();
-      },
-    },
-  ].filter(Boolean);
-}
-
-function folderMenu(folder) {
-  const inside = ArcFox.descendantIds(state.pins, folder.id);
-  const children = state.pins.filter((i) => i.parent === folder.id);
-  const items = state.pins.filter((i) => inside.has(i.id) && !ArcFox.isFolder(i));
-  return [
-    { label: "Rename…", run: () => startRename(folder.id) },
-    { label: "Change Icon…", run: () => changeFolderIcon(folder) },
-    items.length && {
-      label: `Open ${plural(items.length, "Tab")}`,
-      run: async () => {
-        for (const item of items) await ArcFox.openItem(item.id, state.windowId);
-      },
-    },
-    { label: folder.open ? "Collapse" : "Expand", run: () => toggleFolder(folder) },
-    {
-      label: "New Nested Folder",
-      run: async () => {
-        if (!folder.open) await toggleFolder(folder);
-        pendingRename = (await ArcFox.createFolder(state.spaceId, { parent: folder.id })).id;
-      },
-    },
-    folder.parent && {
-      label: "Remove from Folder",
-      run: () => ArcFox.moveItem(folder.id, ArcFox.pinKey(state.spaceId), folder.parent, { parent: pinById(folder.parent)?.parent || null }),
-    },
-    "-",
-    children.length && { label: "Ungroup", run: () => ArcFox.deleteFolder(folder.id, { keepItems: true }) },
-    { label: inside.size ? "Delete Folder and Pins" : "Delete Folder", danger: true, run: () => ArcFox.deleteFolder(folder.id, { keepItems: false }) },
-  ].filter(Boolean);
-}
-
-const FOLDER_EMOJIS = ["📁", "⭐", "❤️", "🔥", "💼", "🏠", "📚", "💻", "🎨", "🎵", "🎮", "🛒", "✈️", "🧪", "📈", "🎬", "🍳", "🌱", "💡", "🚀", "☕", "📷", "🔧", "📰"];
-
-/** The first emoji (one grapheme) of `text`, or "" if it doesn't start with one. */
-function firstEmoji(text) {
-  const first = [...new Intl.Segmenter().segment(text.trim())][0]?.segment || "";
-  return /\p{Extended_Pictographic}|\p{Regional_Indicator}/u.test(first) ? first : "";
-}
-
-/** "Change Icon" dialog: resolves with the picked emoji, "" to remove the icon, or null if cancelled. */
-function pickIcon(current) {
-  return openDialog((close) => {
-    const field = h("input", {
-      className: "emoji-input",
-      value: current || "",
-      placeholder: "🙂",
-      spellcheck: false,
+  loading = new Promise((r) => setTimeout(r, 16))
+    .then(load)
+    .catch((err) => console.error("BookmArc: refresh failed", err))
+    .finally(() => {
+      loading = null;
+      if (again) {
+        again = false;
+        refresh();
+      }
     });
-    return h(
-      "form",
-      {
-        className: "dialog-card",
-        onsubmit: (e) => {
-          e.preventDefault();
-          close(firstEmoji(field.value));
-        },
-      },
-      h("h2", {}, "Change Icon"),
-      h(
-        "div",
-        { className: "emoji-grid" },
-        FOLDER_EMOJIS.map((e) =>
-          h("button", { type: "button", className: `emoji${current === e ? " selected" : ""}`, onclick: () => close(e) }, e)
-        )
-      ),
-      h("label", { className: "field" }, `Other emoji (${isMac ? "⌃⌘Space" : "Win+."} opens the emoji picker)`, field),
-      h(
-        "div",
-        { className: "actions" },
-        current && h("button", { type: "button", className: "reset", onclick: () => close("") }, "Remove Icon"),
-        h("button", { type: "button", dataset: { cancel: "" }, onclick: () => close(null) }, "Cancel"),
-        h("button", { type: "submit", className: "primary" }, "Save")
-      )
-    );
+}
+
+// ---------- Actions ----------
+
+/** Open (or switch to) a favorite or pinned item. */
+async function openItem(item) {
+  const tab = boundTab(item.id);
+  if (tab) {
+    await browser.tabs.update(tab.id, { active: true });
+    return;
+  }
+  const created = await browser.tabs.create({ windowId: S.windowId, url: item.url, active: true });
+  await store.bind(created.id, item.id);
+}
+
+/** A plain tab on `url`. Firefox reports a new tab as about:blank until it starts loading;
+    the background page is told so it doesn't take it for a spare Cmd+T tab. */
+async function openInNewTab(url) {
+  const tab = await browser.tabs.create({ windowId: S.windowId, url, active: true });
+  browser.runtime.sendMessage({ type: "keep-tab", tabId: tab.id }).catch(() => {});
+  return tab;
+}
+
+const openCommandBar = () => browser.runtime.sendMessage({ type: "command-bar", windowId: S.windowId });
+
+async function addFavorite(tab) {
+  if (!tab?.url || S.favorites.some((f) => f.url === tab.url)) return;
+  const fav = { id: store.uid(), url: tab.url, title: tab.title || tab.url };
+  await store.saveFavorites([...S.favorites, fav]);
+  await store.bind(tab.id, fav.id);
+}
+
+/** Pin a tab (a new bookmark in the toolbar), at `targetId`/`where` in the list. */
+async function pinTab(tab, targetId = null, where = "end") {
+  if (!tab?.url) return;
+  const item = { id: store.uid(), url: tab.url, title: tab.title || tab.url };
+  await savePins(placeBlock(S.pins, [item], targetId, where));
+  await store.bind(tab.id, item.id);
+}
+
+/** Remove pinned entries (and what's inside them): their bookmarks go, their open tabs stay. */
+async function unpin(itemIds) {
+  const ids = new Set(itemIds.flatMap((id) => [...subtree(S.pins, id)]));
+  await store.unbindItems([...ids]);
+  await savePins(S.pins.filter((p) => !ids.has(p.id)));
+}
+
+async function removeFavorite(favId) {
+  await store.unbindItems([favId]);
+  await store.saveFavorites(S.favorites.filter((f) => f.id !== favId));
+}
+
+/** A pinned item becomes a favorite (same id: its open tab stays bound). */
+async function pinToFavorite(item, beforeId = null) {
+  const fav = { id: item.id, url: item.url, title: item.name || item.title };
+  const list = S.favorites.filter((f) => f.id !== item.id);
+  const at = beforeId ? list.findIndex((f) => f.id === beforeId) : -1;
+  list.splice(at >= 0 ? at : list.length, 0, fav);
+  await store.saveFavorites(list);
+  await savePins(S.pins.filter((p) => p.id !== item.id));
+}
+
+/** A favorite becomes a pinned item (same id). */
+async function favoriteToPin(fav, targetId = null, where = "end") {
+  await store.saveFavorites(S.favorites.filter((f) => f.id !== fav.id));
+  await savePins(placeBlock(S.pins, [{ id: fav.id, url: fav.url, title: fav.title }], targetId, where));
+}
+
+/** The tab of a favorite / pinned item back on the saved page. */
+async function backToSavedUrl(item) {
+  const tab = boundTab(item.id);
+  if (tab) await browser.tabs.update(tab.id, { url: item.url, active: true });
+}
+
+/** Save the item tab's current page as the item's URL. */
+async function saveCurrentUrl(item) {
+  const tab = boundTab(item.id);
+  if (!tab || !isWebUrl(tab.url)) return;
+  const change = { url: tab.url, title: tab.title || tab.url };
+  if (S.favorites.some((f) => f.id === item.id)) {
+    await store.saveFavorites(S.favorites.map((f) => (f.id === item.id ? { ...f, ...change } : f)));
+  } else {
+    await updatePin(item.id, change);
+  }
+}
+
+/** Close tabs; if that takes the one on screen, the most recent other tab takes over (or a fresh one). */
+async function closeTabs(tabIds) {
+  if (!tabIds.length) return;
+  if (tabIds.includes(activeTab()?.id)) {
+    const rest = S.tabs.filter((t) => !tabIds.includes(t.id));
+    if (rest.length) {
+      const last = rest.reduce((a, b) => ((b.lastAccessed || 0) > (a.lastAccessed || 0) ? b : a));
+      await browser.tabs.update(last.id, { active: true });
+    } else {
+      await browser.tabs.create({ windowId: S.windowId, active: true });
+    }
+  }
+  await browser.tabs.remove(tabIds);
+}
+
+/**
+ * A new folder, renamed in place right away. With entries (pinned items or
+ * folders) and/or tabs, they go into it, where the first entry was.
+ */
+async function newFolder({ parentId = null, pinIds = [], tabs = [] } = {}) {
+  const folder = { id: store.uid(), type: "folder", name: "New Folder", open: true };
+  let pins = S.pins.map((p) => ({ ...p }));
+  const first = pins.find((p) => pinIds.includes(p.id));
+  if (first) pins = placeBlock(pins, [folder], first.id, "before");
+  else pins = placeBlock(pins, [folder], parentId, parentId ? "into" : "end");
+  // Only the outermost picked entries move; what's inside them comes along.
+  const roots = pinIds.filter((id) => !pinIds.some((other) => other !== id && subtree(pins, other).has(id)));
+  for (const id of roots) pins = placeBlock(pins, blockOf(pins, id), folder.id, "into");
+  const items = tabs.filter((t) => t.url).map((t) => ({ tab: t, item: { id: store.uid(), url: t.url, title: t.title || t.url } }));
+  for (const { item } of items) pins = placeBlock(pins, [item], folder.id, "into");
+  pendingRename = folder.id;
+  await savePins(pins);
+  for (const { tab, item } of items) await store.bind(tab.id, item.id);
+}
+
+/** Take an entry out of its folder: right after that folder, one level up. */
+async function removeFromFolder(itemId) {
+  const entry = pinById(itemId);
+  const parent = entry && parentOf(entry);
+  if (parent) await savePins(placeBlock(S.pins, blockOf(S.pins, itemId), parent, "after"));
+}
+
+/** Delete a folder. keepItems: its contents move up a level ("Ungroup"); else they go too. */
+async function deleteFolder(folderId, { keepItems }) {
+  const folder = pinById(folderId);
+  if (!keepItems) return unpin([folderId]);
+  const pins = S.pins
+    .filter((p) => p.id !== folderId)
+    .map((p) => (p.parent === folderId ? { ...p, parent: folder.parent } : p));
+  for (const p of pins) if (!p.parent) delete p.parent;
+  await savePins(pins);
+}
+
+/** Open every pinned item inside a folder that isn't open yet. */
+async function openFolderItems(folderId) {
+  const items = S.pins.filter((p) => !isFolder(p) && subtree(S.pins, folderId).has(p.id) && p.id !== folderId);
+  for (const item of items) {
+    if (boundTab(item.id)) continue;
+    const tab = await browser.tabs.create({ windowId: S.windowId, url: item.url, active: false });
+    await store.bind(tab.id, item.id);
+  }
+}
+
+/** Rename a pinned row in place: the bookmark's (or bookmark folder's) name. */
+function startRename(itemId) {
+  const entry = pinById(itemId);
+  const title = rows.get("i" + itemId)?.querySelector(".title");
+  if (!entry || !title) return;
+  renaming = true;
+  inlineRename(title, isFolder(entry) ? entry.name : title.textContent, async (name) => {
+    renaming = false;
+    if (name && name !== title.textContent) await updatePin(itemId, isFolder(entry) ? { name } : { name, title: name });
+    refresh();
   });
 }
 
-/** Pick an emoji for a folder (shown instead of the folder icon), or remove it. */
 async function changeFolderIcon(folder) {
   const icon = await pickIcon(folder.icon);
   if (icon === null || icon === (folder.icon || "")) return;
-  await ArcFox.updateFolder(folder.id, { icon });
+  await updatePin(folder.id, { icon });
 }
 
-/** Pick the space's emoji (header and space bar), or remove it. */
-async function changeSpaceIcon() {
-  const sp = space();
-  if (!sp) return;
-  const icon = await pickIcon(sp.icon);
-  if (icon === null || icon === (sp.icon || "")) return;
-  await ArcFox.saveSpace({ id: sp.id, icon });
-}
-
-function toggleFolder(folder) {
-  folder.open = !folder.open; // instant feedback, then persist
-  renderPinned();
-  applySelection();
-  return ArcFox.updateFolder(folder.id, { open: folder.open });
-}
-
-let renaming = false;
-
-/** Inline rename of a pinned row: a folder's name, or the title a pinned item shows. */
-function startRename(itemId) {
-  const el = pinEls.get(itemId);
-  const item = pinById(itemId);
-  const title = el?.querySelector(".title");
-  if (!title || !item) return;
-  const isFolder = ArcFox.isFolder(item);
-  const current = isFolder ? item.name : title.textContent;
-  renaming = true;
-  const input = h("input", { className: "rename", value: current, spellcheck: false });
-  title.replaceWith(input);
-  input.focus();
-  input.select();
-  let done = false;
-  const finish = async (save) => {
-    if (done) return;
-    done = true;
-    renaming = false;
-    const name = input.value.trim();
-    input.replaceWith(title);
-    if (save && isFolder && name && name !== current) {
-      title.textContent = name;
-      await ArcFox.updateFolder(itemId, { name });
-    } else if (save && !isFolder && name !== current) {
-      // Empty: back to the page's own title.
-      if (name) title.textContent = name;
-      await ArcFox.renameItem(itemId, name);
-    }
-    schedule(true);
-  };
-  input.addEventListener("keydown", (e) => {
-    e.stopPropagation();
-    if (e.key === "Enter") finish(true);
-    else if (e.key === "Escape") finish(false);
-  });
-  input.addEventListener("blur", () => finish(true));
-  input.addEventListener("mousedown", (e) => e.stopPropagation());
-  input.addEventListener("click", (e) => e.stopPropagation());
-  input.addEventListener("dblclick", (e) => e.stopPropagation());
-}
-
-/** What this sidebar shows, in the shape ArcFox.findItem() expects. */
-const localState = () => ({
-  favLists: new Map([[state.favKey, state.favorites]]),
-  pins: new Map([[state.spaceId, state.pins]]),
-});
-
-/* ---------- Item menus ---------- */
-
-function itemMenu(itemId) {
-  const found = ArcFox.findItem(localState(), itemId);
-  if (!found) return [];
-  const { item } = found;
-  const isFav = ArcFox.isFavKey(found.key);
-  const tab = state.bound.get(itemId);
-  const moved = tab && tab.url !== item.url;
-  return [
-    { label: tab ? "Go to Tab" : "Open", run: () => ArcFox.openItem(itemId, state.windowId) },
-    { label: "Open in New Tab", run: () => newTabInSpace(item.url) },
-    moved && { label: "Back to Saved URL", run: () => ArcFox.resetItem(itemId) },
-    moved && ArcFox.isFavoritable(tab.url) && { label: "Save Current URL", run: () => ArcFox.saveCurrentUrl(itemId) },
-    !isFav && { label: "Rename…", run: () => startRename(itemId) },
-    { label: "Copy Link", run: () => navigator.clipboard.writeText(item.url) },
-    "-",
-    isFav
-      ? { label: "Pin in This Space", run: () => ArcFox.moveItem(itemId, ArcFox.pinKey(state.spaceId)) }
-      : { label: "Move to Favorites", run: () => ArcFox.moveItem(itemId, state.favKey) },
-    !isFav && {
-      label: "New Folder with This Item",
-      run: async () => {
-        const folder = await ArcFox.createFolder(state.spaceId, { itemIds: [itemId] });
-        pendingRename = folder.id;
-      },
-    },
-    !isFav && item.parent && {
-      label: "Remove from Folder",
-      run: () => ArcFox.moveItem(itemId, ArcFox.pinKey(state.spaceId), item.parent, { parent: pinById(item.parent)?.parent || null }),
-    },
-    tab && { label: "Close Tab", run: () => browser.tabs.remove(tab.id) },
-    isFav
-      ? { label: "Remove from Favorites", danger: true, run: () => ArcFox.removeItem(itemId, state.spaceId) }
-      : { label: "Unpin", danger: true, run: () => ArcFox.removeItem(itemId, state.spaceId) },
-  ].filter(Boolean);
-}
-
-/* ---------- Clicks ---------- */
-
-els.favorites.addEventListener("click", (e) => {
-  const tile = e.target.closest(".tile");
-  if (tile) {
-    ArcFox.openItem(tile.dataset.item, state.windowId).then(
-      () => schedule(true),
-      (err) => console.error("Arc: opening the favorite failed", err)
-    );
-  }
-});
-
-for (const zone of [els.favorites, els.pinned]) {
-  zone.addEventListener("contextmenu", (e) => {
-    const el = e.target.closest("[data-item]");
-    if (!el) return;
-    e.preventDefault();
-    let items;
-    if (el.dataset.sel && selection.has(el.dataset.sel) && selection.size > 1) items = selectionMenu();
-    else if (ArcFox.isFolder(pinById(el.dataset.item))) items = folderMenu(pinById(el.dataset.item));
-    else items = itemMenu(el.dataset.item);
-    showMenu(items, e.clientX, e.clientY, () => schedule(true));
-  });
-}
-
-/* ---------- Space header: collapse pinned, space menu ---------- */
-
-/* ---------- Sizing (font, row height, spacing, indent, folder icon) ---------- */
-
-const SIZING_KEY = "sidebarSizing"; // storage.local: {font, height, gap, indent, icon} in px, all sidebars
-const SIZING = [
-  // [key, label, CSS variable, min, max, Arc's value (the default, as in sidebar.css)]
-  ["font", "Font Size", "--row-font", 11, 18, 14],
-  ["height", "Row Height", "--row-height", 26, 48, 36],
-  ["gap", "Row Spacing", "--row-gap", 0, 14, 5],
-  ["indent", "Folder Indent", "--indent", 6, 32, 16],
-  ["icon", "Folder Icon Size", "--folder-icon", 12, 26, 18],
-];
-
-/** Put sizes ({key: px}) on the page; missing keys fall back to sidebar.css. */
-function applySizing(sizing = {}) {
-  for (const [key, , prop, min, max] of SIZING) {
-    const v = Number(sizing[key]);
-    if (Number.isFinite(v)) document.documentElement.style.setProperty(prop, `${Math.min(max, Math.max(min, v))}px`);
-    else document.documentElement.style.removeProperty(prop);
-  }
-}
-
-let sizing = {};
-browser.storage.local.get(SIZING_KEY).then((r) => applySizing((sizing = r[SIZING_KEY] || {})));
-
-/** "Sizing" dialog: a slider per size, previewed live; Save keeps it for every sidebar. */
-async function editSizing() {
-  const draft = Object.fromEntries(SIZING.map(([key, , , , , def]) => [key, sizing[key] ?? def]));
-  const result = await openDialog((close) =>
-    h(
-      "form",
-      { className: "dialog-card sizing-card", onsubmit: (e) => (e.preventDefault(), close("save")) },
-      h("h2", {}, "Sizing"),
-      SIZING.map(([key, label, , min, max]) => {
-        const value = h("span", { className: "range-value" }, `${draft[key]}px`);
-        const range = h("input", {
-          type: "range",
-          min,
-          max,
-          step: key === "font" ? 0.5 : 1,
-          value: draft[key],
-          oninput: (e) => {
-            draft[key] = Number(e.target.value);
-            value.textContent = `${draft[key]}px`;
-            applySizing(draft);
-          },
-        });
-        return h("label", { className: "field" }, h("span", { className: "range-head" }, label, value), range);
-      }),
-      h(
-        "div",
-        { className: "actions" },
-        h("button", { type: "button", className: "reset", onclick: () => close("reset") }, "Arc Defaults"),
-        h("button", { type: "button", dataset: { cancel: "" }, onclick: () => close(null) }, "Cancel"),
-        h("button", { type: "submit", className: "primary" }, "Save")
-      )
-    )
-  );
-  if (result === "save") sizing = draft;
-  else if (result === "reset") sizing = {};
-  applySizing(sizing);
-  if (result) await browser.storage.local.set({ [SIZING_KEY]: sizing });
-}
-
-const PINS_COLLAPSED = "pinnedCollapsed"; // storage.local: {spaceId: true}
-let collapsed = {};
-
-function applyCollapsed() {
-  const isCollapsed = !!collapsed[state.spaceId];
-  document.body.classList.toggle("pins-collapsed", isCollapsed);
-  els.spaceHead.setAttribute("aria-expanded", String(!isCollapsed));
-}
-
-async function toggleCollapsed() {
-  collapsed = { ...collapsed, [state.spaceId]: !collapsed[state.spaceId] };
-  applyCollapsed();
-  await browser.storage.local.set({ [PINS_COLLAPSED]: collapsed });
-}
-
-els.spaceHead.addEventListener("click", (e) => {
-  if (e.target.closest("#space-more, .rename")) return;
-  toggleCollapsed();
-});
-
-// Double-click the space name: rename it.
-els.spaceHead.addEventListener("dblclick", (e) => {
-  if (e.target.closest("#space-name")) startSpaceRename();
-});
-
-/** Inline rename of the space, in its header. Also renames the space's container. */
-function startSpaceRename() {
-  const sp = space();
-  const title = els.spaceName;
-  if (!sp || state.private || !title.isConnected) return;
-  renaming = true;
-  const input = h("input", { className: "rename", value: sp.name, spellcheck: false });
-  title.replaceWith(input);
-  input.focus();
-  input.select();
-  let done = false;
-  const finish = async (save) => {
-    if (done) return;
-    done = true;
-    renaming = false;
-    const name = input.value.trim();
-    input.replaceWith(title);
-    if (save && name && name !== sp.name) {
-      title.textContent = name;
-      await ArcFox.saveSpace({ id: sp.id, name });
-    }
-    schedule(true);
-  };
-  input.addEventListener("keydown", (e) => {
-    e.stopPropagation();
-    if (e.key === "Enter") finish(true);
-    else if (e.key === "Escape") finish(false);
-  });
-  input.addEventListener("blur", () => finish(true));
-  input.addEventListener("mousedown", (e) => e.stopPropagation());
-  input.addEventListener("dblclick", (e) => e.stopPropagation());
-}
-
-$("space-more").addEventListener("click", (e) => {
-  const r = e.currentTarget.getBoundingClientRect();
-  showMenu(spaceMenu(), r.left, r.bottom + 4, () => schedule(true));
-});
-
-// Right-click the space name: same menu.
-els.spaceHead.addEventListener("contextmenu", (e) => {
-  e.preventDefault();
-  showMenu(spaceMenu(), e.clientX, e.clientY, () => schedule(true));
-});
-
-/** Theme dialog: the space's color (Firefox's color picker) and how strongly it tints the sidebar. */
+/** Theme dialog: any color, and how strongly it tints the panel. */
 async function editThemeColor() {
-  const sp = space();
-  if (!sp) return;
-  ArcFox.paintSpace({ ...sp, intensity: null }); // read the default intensity for this text color
+  const theme = S.theme;
+  paintTheme({ ...theme, intensity: null }); // read the default intensity for this text color
   const defaultIntensity = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--tint")) || 16;
-  themeDraft = { tint: ArcFox.spaceColor(sp), intensity: ArcFox.spaceIntensity(sp) ?? defaultIntensity };
-  const preview = () => ArcFox.paintSpace({ ...sp, ...themeDraft });
+  themeDraft = { tint: store.themeColor(theme), intensity: store.themeIntensity(theme) ?? defaultIntensity };
+  const preview = () => paintTheme({ ...theme, ...themeDraft });
   preview();
   const result = await openDialog((close) => {
     const setTint = (hex) => {
@@ -1129,7 +816,7 @@ async function editThemeColor() {
     const range = h("input", {
       type: "range",
       min: 0,
-      max: ArcFox.MAX_INTENSITY,
+      max: store.MAX_INTENSITY,
       step: 1,
       value: themeDraft.intensity,
       oninput: (e) => {
@@ -1147,7 +834,7 @@ async function editThemeColor() {
       h(
         "div",
         { className: "actions" },
-        (sp.tint || ArcFox.spaceIntensity(sp) !== null || sp.text) &&
+        (theme.tint || Number.isFinite(theme.intensity) || theme.text) &&
           h("button", { type: "button", className: "reset", onclick: () => close("reset") }, "Reset"),
         h("button", { type: "button", dataset: { cancel: "" }, onclick: () => close(null) }, "Cancel"),
         h("button", { type: "submit", className: "primary" }, "Save")
@@ -1156,684 +843,737 @@ async function editThemeColor() {
   });
   const draft = themeDraft;
   themeDraft = null;
-  if (result === "save") await ArcFox.saveSpace({ id: sp.id, tint: draft.tint, intensity: draft.intensity });
-  else if (result === "reset") await ArcFox.saveSpace({ id: sp.id, tint: "", intensity: null, text: null });
-  ArcFox.paintSpace(space());
+  if (result === "save") await store.saveTheme({ ...theme, tint: draft.tint, intensity: draft.intensity });
+  else if (result === "reset") await store.saveTheme({});
+  else paintTheme(S.theme);
 }
 
-/* ---------- Export pinned tabs as bookmarks ---------- */
-
-const escapeHtml = (text) =>
-  String(text).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
-
-/**
- * The space's pinned tabs and folders as a bookmarks file (the Netscape
- * format every browser imports), inside one folder named after the space.
- */
-function bookmarksHtml(sp, pins) {
-  const added = Math.floor(Date.now() / 1000);
-  const folderIds = new Set(pins.filter(ArcFox.isFolder).map((f) => f.id));
-  const seen = new Set();
-  const lines = [];
-  const pad = (depth) => "    ".repeat(depth);
-  const add = (item, depth) => {
-    if (seen.has(item.id)) return;
-    seen.add(item.id);
-    if (!ArcFox.isFolder(item)) {
-      const title = item.name || item.title || item.url;
-      lines.push(`${pad(depth)}<DT><A HREF="${escapeHtml(item.url)}" ADD_DATE="${added}">${escapeHtml(title)}</A>`);
-      return;
-    }
-    lines.push(`${pad(depth)}<DT><H3 ADD_DATE="${added}">${escapeHtml(item.name)}</H3>`, `${pad(depth)}<DL><p>`);
-    for (const child of pins) if (child.parent === item.id) add(child, depth + 1);
-    lines.push(`${pad(depth)}</DL><p>`);
-  };
-  for (const item of pins) if (!item.parent || !folderIds.has(item.parent)) add(item, 2);
-  return [
-    "<!DOCTYPE NETSCAPE-Bookmark-file-1>",
-    "<!-- This is an automatically generated file. -->",
-    '<META HTTP-EQUIV="Content-Type" CONTENT="text/html; charset=UTF-8">',
-    "<TITLE>Bookmarks</TITLE>",
-    "<H1>Bookmarks</H1>",
-    "<DL><p>",
-    `    <DT><H3 ADD_DATE="${added}">${escapeHtml(sp.name)}</H3>`,
-    "    <DL><p>",
-    ...lines,
-    "    </DL><p>",
-    "</DL><p>",
-    "",
-  ].join("\n");
+async function copy(text) {
+  await navigator.clipboard.writeText(text).catch(() => {});
 }
 
-/** Save the space's pinned tabs as "<space> Bookmarks.html". */
-function exportBookmarks() {
-  const sp = space();
-  if (!sp) return;
-  const blob = new Blob([bookmarksHtml(sp, state.pins)], { type: "text/html" });
-  const url = URL.createObjectURL(blob);
-  const name = `${sp.name.replace(/[\\/:*?"<>|]+/g, "-").trim() || "Space"} Bookmarks.html`;
-  const link = h("a", { href: url, download: name, hidden: true });
-  document.body.append(link);
-  link.click();
-  link.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 60_000);
-}
+// ---------- Sizing (font, row height, spacing, indent, folder icon) ----------
 
-/**
- * Read a bookmarks file (the Netscape format browsers export): nested
- * <DL> lists, a folder is <DT><H3> followed by its <DL>, a bookmark <DT><A>.
- */
-function parseBookmarks(html) {
-  const doc = new DOMParser().parseFromString(html, "text/html");
-  const walk = (dl) => {
-    const out = [];
-    for (const dt of dl.querySelectorAll(":scope > dt, :scope > p > dt")) {
-      const link = dt.querySelector(":scope > a");
-      const head = dt.querySelector(":scope > h3");
-      if (link) out.push({ type: "tab", url: link.getAttribute("href") || "", title: link.textContent.trim() });
-      else if (head) {
-        // The folder's list sits inside its <dt>, or right after it in older files.
-        const list = dt.querySelector(":scope > dl") || (dt.nextElementSibling?.tagName === "DL" ? dt.nextElementSibling : null);
-        out.push({ type: "folder", name: head.textContent.trim(), children: list ? walk(list) : [] });
-      }
-    }
-    return out;
-  };
-  const root = doc.querySelector("dl");
-  let tree = root ? walk(root) : [];
-  // A file holding a single folder (like Arc's own export, named after the
-  // space) brings its contents, not the wrapper.
-  while (tree.length === 1 && tree[0].type === "folder") tree = tree[0].children;
-  return tree;
-}
+const SIZING_KEY = "sidebarSizing"; // storage.local: {font, height, gap, indent, icon} in px, all panels
+const SIZING = [
+  // [key, label, CSS variable, min, max, the default (as in sidebar.css)]
+  ["font", "Font Size", "--row-font", 11, 18, 14],
+  ["height", "Row Height", "--row-height", 26, 48, 36],
+  ["gap", "Row Spacing", "--row-gap", 0, 14, 5],
+  ["indent", "Folder Indent", "--indent", 6, 32, 16],
+  ["icon", "Folder Icon Size", "--folder-icon", 12, 26, 18],
+];
 
-/** Bookmarks (web addresses only, as importPins keeps them) and folders in a tree. */
-function countBookmarks(tree) {
-  let pins = 0;
-  let folders = 0;
-  for (const x of tree) {
-    if (x.type === "tab") {
-      if (ArcFox.isFavoritable(x.url)) pins++;
-      continue;
-    }
-    const inside = countBookmarks(x.children);
-    pins += inside.pins;
-    folders += 1 + inside.folders;
+/** Put sizes ({key: px}) on the page; missing keys fall back to sidebar.css. */
+function applySizing(sizing = {}) {
+  for (const [key, , prop, min, max] of SIZING) {
+    const v = Number(sizing[key]);
+    if (Number.isFinite(v)) document.documentElement.style.setProperty(prop, `${Math.min(max, Math.max(min, v))}px`);
+    else document.documentElement.style.removeProperty(prop);
   }
-  return { pins, folders };
 }
 
-/** Pick a bookmarks .html file and pin its bookmarks in this space, folders and all. */
-function importBookmarks() {
-  const sp = space();
-  if (!sp) return;
-  // Opened straight from the menu click: Firefox only shows the file picker on a user action.
-  const input = h("input", { type: "file", accept: ".html,.htm,text/html", hidden: true });
-  document.body.append(input);
-  input.addEventListener("change", async () => {
-    const file = input.files[0];
-    input.remove();
-    if (!file) return;
-    const tree = parseBookmarks(await file.text());
-    const { pins, folders } = countBookmarks(tree);
-    const ok = await openDialog((close) =>
+let sizing = {};
+
+/** "Sizing" dialog: a slider per size, previewed live; Save keeps it for every panel. */
+async function editSizing() {
+  const draft = Object.fromEntries(SIZING.map(([key, , , , , def]) => [key, sizing[key] ?? def]));
+  const result = await openDialog((close) =>
+    h(
+      "form",
+      { className: "dialog-card sizing-card", onsubmit: (e) => (e.preventDefault(), close("save")) },
+      h("h2", {}, "Sizing"),
+      SIZING.map(([key, label, , min, max]) => {
+        const value = h("span", { className: "range-value" }, `${draft[key]}px`);
+        const range = h("input", {
+          type: "range",
+          min,
+          max,
+          step: key === "font" ? 0.5 : 1,
+          value: draft[key],
+          oninput: (e) => {
+            draft[key] = Number(e.target.value);
+            value.textContent = `${draft[key]}px`;
+            applySizing(draft);
+          },
+        });
+        return h("label", { className: "field" }, h("span", { className: "range-head" }, label, value), range);
+      }),
       h(
-        "form",
-        { className: "dialog-card", onsubmit: (e) => (e.preventDefault(), close(pins > 0)) },
-        h("h2", {}, "Import Bookmarks"),
-        h(
-          "p",
-          { className: "hint" },
-          pins
-            ? `Pin ${plural(pins, "bookmark")}${folders ? ` in ${plural(folders, "folder")}` : ""} from “${file.name}” in “${sp.name}”?`
-            : `“${file.name}” has no bookmarks to import.`
-        ),
-        h(
-          "div",
-          { className: "actions" },
-          h("button", { type: "button", dataset: { cancel: "" }, onclick: () => close(false) }, pins ? "Cancel" : "OK"),
-          pins > 0 && h("button", { type: "submit", className: "primary" }, "Import")
-        )
+        "div",
+        { className: "actions" },
+        h("button", { type: "button", className: "reset", onclick: () => close("reset") }, "Defaults"),
+        h("button", { type: "button", dataset: { cancel: "" }, onclick: () => close(null) }, "Cancel"),
+        h("button", { type: "submit", className: "primary" }, "Save")
       )
-    );
-    if (ok) await ArcFox.importPins(sp.id, tree);
-  });
-  input.click();
+    )
+  );
+  if (result === "save") sizing = draft;
+  else if (result === "reset") sizing = {};
+  applySizing(sizing);
+  if (result) await browser.storage.local.set({ [SIZING_KEY]: sizing });
 }
 
-/** The text color a space shows now: its own choice, else the system's. */
-const spaceText = (sp) => sp?.text || (matchMedia("(prefers-color-scheme: dark)").matches ? "light" : "dark");
+// ---------- Divider: dock the open tabs, resize the pinned list ----------
 
-function spaceMenu() {
-  const sp = space();
-  const text = spaceText(sp);
+const TODAY_FLOW = "todayFlow"; // storage.local: true = open tabs follow the whole pinned list
+const PINNED_HEIGHT = "pinnedHeight"; // storage.local: px the pinned list may take while docked
+const PINS_COLLAPSED = "pinsCollapsed"; // storage.local: the pinned list is folded away
+
+/**
+ * The divider's pin. Docked (default): the pinned list scrolls on its own so
+ * the open tabs keep their place in view. Not docked: they sit below the
+ * whole pinned list and the panel scrolls.
+ */
+function applyTodayFlow(flow) {
+  document.body.classList.toggle("today-flow", flow);
+  els.dockToday.replaceChildren(lucide(flow ? LUCIDE.pinOff : LUCIDE.pin));
+  els.dockToday.title = flow ? "Keep open tabs in view (pinned tabs scroll on their own)" : "Let open tabs follow all pinned tabs";
+  els.dockToday.setAttribute("aria-pressed", String(!flow));
+}
+
+function applyPinnedHeight(px) {
+  if (Number.isFinite(px)) document.documentElement.style.setProperty("--pinned-height", `${px}px`);
+  else document.documentElement.style.removeProperty("--pinned-height");
+}
+
+els.dockToday.addEventListener("click", () => {
+  const flow = !document.body.classList.contains("today-flow");
+  applyTodayFlow(flow);
+  browser.storage.local.set({ [TODAY_FLOW]: flow });
+});
+
+/**
+ * While docked, dragging the divider moves where the pinned list ends (it
+ * scrolls on its own above). It stops at the list's full length and leaves
+ * room for a few open tabs. Double-click: back to the default.
+ */
+{
+  const row = els.dividerRow;
+  const canResize = () => !document.body.classList.contains("today-flow") && !document.body.classList.contains("pins-collapsed");
+  row.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0 || e.target.closest("button") || !canResize()) return;
+    e.preventDefault();
+    const pinned = els.pinned;
+    const startY = e.clientY;
+    const startH = pinned.getBoundingClientRect().height;
+    const most = () => Math.min(pinned.scrollHeight, els.scroll.clientHeight - 120);
+    let height = startH;
+    row.setPointerCapture(e.pointerId);
+    row.classList.add("resizing");
+    const move = (ev) => {
+      height = Math.round(Math.max(40, Math.min(most(), startH + ev.clientY - startY)));
+      applyPinnedHeight(height);
+    };
+    const end = () => {
+      row.classList.remove("resizing");
+      row.removeEventListener("pointermove", move);
+      row.removeEventListener("pointerup", end);
+      row.removeEventListener("pointercancel", end);
+      if (height !== startH) browser.storage.local.set({ [PINNED_HEIGHT]: height });
+    };
+    row.addEventListener("pointermove", move);
+    row.addEventListener("pointerup", end);
+    row.addEventListener("pointercancel", end);
+  });
+  row.addEventListener("dblclick", (e) => {
+    if (e.target.closest("button") || !canResize()) return;
+    applyPinnedHeight(undefined);
+    browser.storage.local.remove(PINNED_HEIGHT);
+  });
+}
+
+let pinsCollapsed = false;
+
+// Layout preferences shared by every window's panel.
+browser.storage.local.get([SIZING_KEY, TODAY_FLOW, PINNED_HEIGHT, PINS_COLLAPSED]).then((r) => {
+  applySizing((sizing = r[SIZING_KEY] || {}));
+  applyTodayFlow(!!r[TODAY_FLOW]);
+  applyPinnedHeight(r[PINNED_HEIGHT]);
+  pinsCollapsed = !!r[PINS_COLLAPSED];
+  // Before the first load there's nothing to draw yet; load() picks the flag up.
+  if (!document.body.classList.contains("booting")) render();
+});
+applyTodayFlow(false);
+
+browser.storage.onChanged.addListener((changes, area) => {
+  if (area !== "local") return;
+  if (SIZING_KEY in changes) applySizing((sizing = changes[SIZING_KEY].newValue || {}));
+  if (TODAY_FLOW in changes) applyTodayFlow(!!changes[TODAY_FLOW].newValue);
+  if (PINNED_HEIGHT in changes) applyPinnedHeight(changes[PINNED_HEIGHT].newValue);
+  if (PINS_COLLAPSED in changes) {
+    pinsCollapsed = !!changes[PINS_COLLAPSED].newValue;
+    render();
+  }
+});
+
+// ---------- Selection (Shift / Cmd-click) ----------
+
+const selection = new Set(); // "i<itemId>" (pinned items, folders) / "t<tabId>" (tabs), as in `rows`
+let anchor = null;
+
+const keyOf = (row) => (row.dataset.item ? "i" + row.dataset.item : "t" + row.dataset.tab);
+
+function applySelection() {
+  for (const el of rows.values()) if (!el.classList.contains("split")) el.classList.toggle("selected", selection.has(keyOf(el)));
+}
+
+/** The row (or split half) an event is on: a pinned item / folder, or a tab. */
+const rowAt = (target) => target.closest?.(".half[data-tab], .tab[data-item], .tab[data-tab]:not(.split)");
+
+function clearSelection() {
+  if (!selection.size) return;
+  selection.clear();
+  anchor = null;
+  applySelection();
+}
+
+/** Shift = range, Cmd (Ctrl elsewhere) = toggle. Returns true if the click was a selection click. */
+function handleSelectClick(e, row) {
+  const toggle = isMac ? e.metaKey : e.ctrlKey;
+  if (!row || (!e.shiftKey && !toggle)) {
+    clearSelection();
+    return false;
+  }
+  const key = keyOf(row);
+  if (e.shiftKey && anchor) {
+    // The range runs over the rows on screen, pinned and open tabs alike.
+    const keys = [...els.scroll.querySelectorAll(".tab[data-item], .tab[data-tab]:not(.split), .half[data-tab]")].map(keyOf);
+    const a = keys.indexOf(anchor);
+    const b = keys.indexOf(key);
+    selection.clear();
+    if (a >= 0 && b >= 0) for (let i = Math.min(a, b); i <= Math.max(a, b); i++) selection.add(keys[i]);
+    else selection.add(key);
+  } else {
+    if (selection.has(key)) selection.delete(key);
+    else selection.add(key);
+    anchor = key;
+  }
+  applySelection();
+  return true;
+}
+
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") clearSelection();
+});
+
+/** The menu for several selected rows. */
+function selectionMenu() {
+  const keys = [...selection];
+  const pinIds = keys.filter((k) => k[0] === "i").map((k) => k.slice(1)).filter((id) => pinById(id));
+  const itemIds = pinIds.filter((id) => !isFolder(pinById(id)));
+  const tabs = keys.filter((k) => k[0] === "t").map((k) => tabById(Number(k.slice(1)))).filter(Boolean);
+  const links = [...itemIds.map((id) => boundTab(id)?.url || pinById(id)?.url), ...tabs.map((t) => t.url)].filter(Boolean);
+  const openTabs = [...itemIds.flatMap((id) => tabsOf(id).map((t) => t.id)), ...tabs.map((t) => t.id)];
+  const n = pinIds.length + tabs.length;
+  const done = (fn) => async () => {
+    await fn();
+    clearSelection();
+  };
   return [
-    sp && !state.private && { label: "Change Space Icon…", run: changeSpaceIcon },
-    sp && !state.private && { label: "Rename Space…", run: startSpaceRename },
-    { label: "Edit Theme Color…", run: editThemeColor },
-    { label: "Sizing…", run: editSizing },
-    sp && {
-      label: text === "light" ? "Use Dark Text" : "Use Light Text",
-      run: () => ArcFox.saveSpace({ id: sp.id, text: text === "light" ? "dark" : "light" }),
-    },
+    links.length && { label: "Copy Links", run: done(() => copy(links.join("\n"))) },
     "-",
-    {
-      label: "New Folder",
-      run: async () => {
-        pendingRename = (await ArcFox.createFolder(state.spaceId)).id;
-      },
+    n && { label: `New Folder with ${plural(n, "Item")}`, run: done(() => newFolder({ pinIds, tabs })) },
+    openTabs.length && { label: `Close ${plural(openTabs.length, "Tab")}`, run: done(() => closeTabs(openTabs)) },
+    pinIds.length && {
+      label: pinIds.length === 1 ? "Remove Pin" : "Remove Pins",
+      danger: true,
+      run: done(() => unpin(pinIds)),
     },
-    "-",
-    sp &&
-      !state.private && {
-        label: "Bookmarks",
-        submenu: [
-          { label: "Import Bookmarks…", run: importBookmarks },
-          { label: "Export as Bookmarks…", run: exportBookmarks, disabled: !state.pins.length },
-        ],
-      },
-    { label: "Import from Arc…", run: () => newTabInSpace(browser.runtime.getURL("import/import.html")) },
   ].filter(Boolean);
 }
 
-els.pinned.addEventListener("click", (e) => {
-  const row = e.target.closest(".tab");
-  if (!row || handleSelectClick(e, row)) return;
-  const folder = pinById(row.dataset.item);
-  if (ArcFox.isFolder(folder)) {
-    toggleFolder(folder);
+// ---------- Context menus ----------
+
+async function tabMenu(tab) {
+  const list = todayTabs();
+  const at = list.findIndex((t) => t.id === tab.id);
+  const above = list.slice(0, Math.max(0, at));
+  const below = list.slice(at + 1);
+  const muted = !!tab.mutedInfo?.muted;
+  // Items other extensions added (e.g. "Let AI agents control this tab").
+  const extra = await tabMenuFor(tab.id).catch(() => []);
+  return [
+    { label: "Pin", run: () => pinTab(tab) },
+    { label: "Add to Favorites", run: () => addFavorite(tab) },
+    { label: "New Folder with This Tab", run: () => newFolder({ tabs: [tab] }) },
+    "-",
+    { label: "Duplicate", run: () => browser.tabs.duplicate(tab.id) },
+    { label: "Reload", run: () => browser.tabs.reload(tab.id) },
+    { label: muted ? "Unmute Tab" : "Mute Tab", run: () => browser.tabs.update(tab.id, { muted: !muted }) },
+    { label: "Copy Link", run: () => copy(tab.url) },
+    { label: "Open in New Window", run: () => browser.windows.create({ tabId: tab.id }) },
+    ...(extra.length
+      ? [
+          "-",
+          ...extra.map((item) => ({
+            label: item.title,
+            run: () =>
+              browser.runtime.sendMessage(item.extensionId, { type: "bookmarc:menu-clicked", id: item.id, tabId: tab.id }).catch(() => {}),
+          })),
+        ]
+      : []),
+    "-",
+    closeEmptyTabsItem(),
+    { label: above.length ? `Close ${plural(above.length, "Tab")} Above` : "Close Tabs Above", disabled: !above.length, run: () => closeTabs(above.map((t) => t.id)) },
+    { label: below.length ? `Close ${plural(below.length, "Tab")} Below` : "Close Tabs Below", disabled: !below.length, run: () => closeTabs(below.map((t) => t.id)) },
+    { label: "Close Tab", danger: true, run: () => closeTabs([tab.id]) },
+  ];
+}
+
+/** "Close N Open Tabs" for the tabs of `items` (a folder's pins, the favorites); null if none are open. */
+function closeOpenTabsItem(items) {
+  const open = items.flatMap((p) => tabsOf(p.id).map((t) => t.id));
+  if (!open.length) return null;
+  return { label: `Close ${open.length} Open ${open.length === 1 ? "Tab" : "Tabs"}`, run: () => closeTabs(open) };
+}
+
+/** What any open tab's menu has: duplicate, reload, mute. Nothing without a tab. */
+function openTabActions(tab) {
+  if (!tab) return [];
+  const muted = !!tab.mutedInfo?.muted;
+  return [
+    "-",
+    { label: "Duplicate", run: () => browser.tabs.duplicate(tab.id) },
+    { label: "Reload", run: () => browser.tabs.reload(tab.id) },
+    { label: muted ? "Unmute Tab" : "Mute Tab", run: () => browser.tabs.update(tab.id, { muted: !muted }) },
+  ];
+}
+
+function itemMenu(item) {
+  const tab = boundTab(item.id);
+  const moved = tab && tab.url !== item.url;
+  return [
+    { label: "Open in New Tab", run: () => openInNewTab(item.url) },
+    moved && { label: "Back to Saved URL", run: () => backToSavedUrl(item) },
+    moved && isWebUrl(tab.url) && { label: "Save Current URL", run: () => saveCurrentUrl(item) },
+    { label: "Rename", run: () => startRename(item.id) },
+    { label: "Copy Link", run: () => copy(item.url) },
+    ...openTabActions(tab),
+    "-",
+    { label: "Move to Favorites", run: () => pinToFavorite(item) },
+    { label: "New Folder with This Item", run: () => newFolder({ pinIds: [item.id] }) },
+    parentOf(item) && { label: "Remove from Folder", run: () => removeFromFolder(item.id) },
+    tab && { label: "Close Tab", run: () => closeTabs(tabsOf(item.id).map((t) => t.id)) },
+    { label: "Unpin", danger: true, run: () => unpin([item.id]) },
+  ].filter(Boolean);
+}
+
+function folderMenu(folder) {
+  const inside = [...subtree(S.pins, folder.id)].filter((id) => id !== folder.id);
+  const items = inside.map(pinById).filter((p) => p && !isFolder(p));
+  const closed = items.filter((p) => !boundTab(p.id));
+  const children = S.pins.filter((p) => parentOf(p) === folder.id);
+  return [
+    { label: "Rename", run: () => startRename(folder.id) },
+    { label: "Change Icon…", run: () => changeFolderIcon(folder) },
+    { label: "Set Color…", run: () => setFolderColor(folder) },
+    closed.length && { label: `Open ${plural(closed.length, "Tab")}`, run: () => openFolderItems(folder.id) },
+    // Its pins at any depth, so every folder above an open tab offers this too.
+    closeOpenTabsItem(items),
+    { label: folder.open ? "Collapse" : "Expand", run: () => updatePin(folder.id, { open: !folder.open }) },
+    { label: "New Nested Folder", run: () => newFolder({ parentId: folder.id }) },
+    parentOf(folder) && { label: "Remove from Folder", run: () => removeFromFolder(folder.id) },
+    "-",
+    children.length && { label: "Ungroup", run: () => deleteFolder(folder.id, { keepItems: true }) },
+    {
+      label: inside.length ? "Delete Folder and Pins" : "Delete Folder",
+      danger: true,
+      run: () => deleteFolder(folder.id, { keepItems: false }),
+    },
+  ].filter(Boolean);
+}
+
+function favoriteMenu(fav) {
+  const tab = boundTab(fav.id);
+  const moved = tab && tab.url !== fav.url;
+  return [
+    { label: "Open in New Tab", run: () => openInNewTab(fav.url) },
+    moved && { label: "Back to Saved URL", run: () => backToSavedUrl(fav) },
+    moved && isWebUrl(tab.url) && { label: "Save Current URL", run: () => saveCurrentUrl(fav) },
+    { label: "Copy Link", run: () => copy(fav.url) },
+    ...openTabActions(tab),
+    "-",
+    { label: "Pin", run: () => favoriteToPin(fav) },
+    tab && { label: "Close Tab", run: () => closeTabs(tabsOf(fav.id).map((t) => t.id)) },
+    closeOpenTabsItem(S.favorites),
+    { label: "Remove from Favorites", danger: true, run: () => removeFavorite(fav.id) },
+  ].filter(Boolean);
+}
+
+/** The header's menu: the panel's own settings. */
+function optionsMenu() {
+  const text = themeText(S.theme);
+  return [
+    { label: "New Folder", run: () => newFolder() },
+    // Every pinned tab that's open, in any folder.
+    closeOpenTabsItem(S.pins.filter((p) => !isFolder(p))),
+    closeEmptyTabsItem(),
+    "-",
+    { label: "Edit Theme Color…", run: editThemeColor },
+    { label: text === "light" ? "Use Dark Text" : "Use Light Text", run: () => store.saveTheme({ ...S.theme, text: text === "light" ? "dark" : "light" }) },
+    { label: "Sizing…", run: editSizing },
+  ].filter(Boolean);
+}
+
+document.addEventListener("contextmenu", async (e) => {
+  if (e.target.closest("input")) return;
+  e.preventDefault();
+  const row = rowAt(e.target);
+  if (row && selection.has(keyOf(row)) && selection.size > 1) {
+    showMenu(selectionMenu(), e.clientX, e.clientY);
     return;
   }
-  const tab = state.bound.get(row.dataset.item);
-  if (e.target.closest(".close")) {
-    if (tab) closeTab(tab.id);
-  } else if (row.classList.contains("moved") && e.target.closest(".favicon")) {
-    // The icon of a tab that moved on: back to the pinned page.
-    const itemId = row.dataset.item;
-    ArcFox.openItem(itemId, state.windowId)
-      .then(() => ArcFox.resetItem(itemId))
-      .then(
-        () => schedule(true),
-        (err) => console.error("Arc: going back to the pinned page failed", err)
-      );
-  } else if (e.target.closest(".audio")) {
-    if (tab) browser.tabs.update(tab.id, { muted: !tab.mutedInfo?.muted });
-  } else {
-    ArcFox.openItem(row.dataset.item, state.windowId).then(
-      () => schedule(true),
-      (err) => console.error("Arc: opening the pinned item failed", err)
-    );
-  }
+  const tabEl = row?.dataset.tab ? row : null;
+  const itemEl = e.target.closest("[data-item]");
+  let items = null;
+  if (tabEl) {
+    const tab = tabById(Number(tabEl.dataset.tab));
+    if (tab) items = await tabMenu(tab);
+  } else if (itemEl?.classList.contains("tile")) {
+    const fav = S.favorites.find((f) => f.id === itemEl.dataset.item);
+    if (fav) items = favoriteMenu(fav);
+  } else if (itemEl) {
+    const entry = pinById(itemEl.dataset.item);
+    if (entry) items = isFolder(entry) ? folderMenu(entry) : itemMenu(entry);
+  } else if (e.target.closest("#space-head, #pinned, #today, .scroll")) items = optionsMenu();
+  if (items) showMenu(items, e.clientX, e.clientY);
 });
 
-// Double-click a folder's or pinned item's title: rename it.
-els.pinned.addEventListener("dblclick", (e) => {
-  const row = e.target.closest(".tab");
-  if (row && e.target.closest(".title")) startRename(row.dataset.item);
-});
+// ---------- Clicks ----------
 
-els.pinned.addEventListener("auxclick", (e) => {
-  const row = e.target.closest(".tab");
-  const tab = row && state.bound.get(row.dataset.item);
-  if (tab && e.button === 1) closeTab(tab.id);
-});
-
-els.today.addEventListener("click", (e) => {
-  const row = e.target.closest("[data-tab]:not(.split)");
-  if (handleSelectClick(e, row)) return;
-  const tab = row && tabById(Number(row.dataset.tab));
-  if (!tab) return;
-  if (e.target.closest(".close")) closeTab(tab.id);
-  else if (e.target.closest(".audio")) browser.tabs.update(tab.id, { muted: !tab.mutedInfo?.muted });
-  else browser.tabs.update(tab.id, { active: true });
-});
-
-els.today.addEventListener("auxclick", (e) => {
-  const row = e.target.closest("[data-tab]:not(.split)");
-  if (row && e.button === 1) closeTab(Number(row.dataset.tab));
-});
-
-// Arc's tab menu items ("Add to Favorites / Pin / Move to Space"). Firefox
-// only shows extension items here, not its own tab menu.
-els.today.addEventListener("contextmenu", (e) => {
-  const row = e.target.closest("[data-tab]:not(.split)");
-  if (!row) return;
-  if (selection.has(row.dataset.sel) && selection.size > 1) {
-    e.preventDefault();
-    showMenu(selectionMenu(), e.clientX, e.clientY, () => schedule(true));
+els.scroll.addEventListener("click", (e) => {
+  const more = e.target.closest(".folder-more");
+  if (more) {
+    const folder = pinById(more.closest(".tab").dataset.item);
+    const r = more.getBoundingClientRect();
+    if (folder) showMenu(folderMenu(folder), r.left, r.bottom + 4);
     return;
   }
-  browser.menus.overrideContext({ context: "tab", tabId: Number(row.dataset.tab) });
+  const row = rowAt(e.target);
+  if (handleSelectClick(e, row) || !row) return;
+  if (row.dataset.tab) {
+    const tab = tabById(Number(row.dataset.tab));
+    if (!tab) return;
+    if (e.target.closest(".close")) closeTabs([tab.id]);
+    else if (e.target.closest(".audio")) browser.tabs.update(tab.id, { muted: !tab.mutedInfo?.muted });
+    else browser.tabs.update(tab.id, { active: true });
+    return;
+  }
+  const entry = pinById(row.dataset.item);
+  if (!entry) return;
+  const tab = boundTab(entry.id);
+  if (isFolder(entry)) updatePin(entry.id, { open: !entry.open });
+  else if (e.target.closest(".close")) closeTabs(tabsOf(entry.id).map((t) => t.id));
+  else if (e.target.closest(".audio") && tab) browser.tabs.update(tab.id, { muted: !tab.mutedInfo?.muted });
+  // The icon of a tab that moved on: back to the pinned page.
+  else if (row.classList.contains("moved") && e.target.closest(".favicon")) backToSavedUrl(entry);
+  else openItem(entry);
+});
+
+// Middle-click closes a tab (a pinned item stays).
+els.scroll.addEventListener("auxclick", (e) => {
+  if (e.button !== 1) return;
+  const tabEl = e.target.closest(".half[data-tab], .tab[data-tab]:not(.split)");
+  const itemEl = e.target.closest(".tab.item[data-item]");
+  if (tabEl) closeTabs([Number(tabEl.dataset.tab)]);
+  else if (itemEl) closeTabs(tabsOf(itemEl.dataset.item).map((t) => t.id));
 });
 
 document.addEventListener("mousedown", (e) => {
   if (e.button === 1 && e.target.closest(".tab")) e.preventDefault(); // no autoscroll
 });
 
+// Double-click the empty space below the open tabs: a new tab (the command bar).
 els.today.addEventListener("dblclick", (e) => {
-  if (!e.target.closest(".tab")) newTabInSpace();
+  if (!e.target.closest(".tab")) openCommandBar();
 });
 
-// New Tab opens Arc's command bar in a new tab (see palette/).
-els.newTab.addEventListener("click", () => newTabInSpace());
+els.favorites.addEventListener("click", (e) => {
+  const fav = S.favorites.find((f) => f.id === e.target.closest(".tile")?.dataset.item);
+  if (fav) openItem(fav);
+});
 
-els.clear.addEventListener("click", async () => {
-  const ids = state.tabs
-    .filter((t) => !state.tabItem.has(t.id) && spaceOf(t) === state.spaceId)
-    .map((t) => t.id);
-  if (!ids.length) return;
-  // Keep the space (and window) alive with a fresh tab.
-  await newTabInSpace();
+els.spaceMore.addEventListener("click", (e) => {
+  e.stopPropagation();
+  const r = els.spaceMore.getBoundingClientRect();
+  showMenu(optionsMenu(), r.left, r.bottom + 4);
+});
+
+// Double-click a folder's or pinned item's title: rename it.
+els.pinned.addEventListener("dblclick", (e) => {
+  const row = e.target.closest(".tab[data-item]");
+  if (row && e.target.closest(".title")) startRename(row.dataset.item);
+});
+
+// The header folds the pinned list away (remembered for every window).
+els.spaceHead.addEventListener("click", () => {
+  pinsCollapsed = !pinsCollapsed;
+  render();
+  browser.storage.local.set({ [PINS_COLLAPSED]: pinsCollapsed });
+});
+
+// Empty tabs aren't listed, but they go too.
+els.clear.addEventListener("click", () => closeTabs(S.tabs.filter((t) => !shownElsewhere(t) && !t.pinned).map((t) => t.id)));
+
+// "Close All" in the status bar: every tab, pinned ones too. The first click
+// only arms it ("Close 12?"); a second one within a few seconds closes them.
+let closeAllArmed = null;
+
+function disarmCloseAll() {
+  clearTimeout(closeAllArmed);
+  closeAllArmed = null;
+  els.closeAll.classList.remove("armed");
+  els.closeAll.textContent = "Close All";
+  renderStatus();
+}
+
+els.closeAll.addEventListener("click", async () => {
+  // Empty tabs go too, though they aren't counted: the fresh one below replaces them.
+  const ids = S.tabs.filter((t) => !t.hidden).map((t) => t.id);
+  if (!openTabs().length) return;
+  if (!closeAllArmed) {
+    els.closeAll.classList.add("armed");
+    els.closeAll.textContent = `Close ${openTabs().length}?`;
+    closeAllArmed = setTimeout(disarmCloseAll, 3000);
+    return;
+  }
+  disarmCloseAll();
+  // A fresh tab first: closing the last one would close the window.
+  await browser.tabs.create({ windowId: S.windowId, active: true });
   await browser.tabs.remove(ids);
 });
+els.closeAll.addEventListener("blur", () => closeAllArmed && disarmCloseAll());
 
-/* ---------- Drag and drop ---------- */
+/* "New Tab" opens the command bar (the service worker owns it). */
+els.newTab.addEventListener("click", openCommandBar);
 
-function clearDropMarks() {
+// ---------- Search field ----------
+
+// The "×" in the field: shown while there's text, empties it.
+els.searchClear.addEventListener("click", () => {
+  els.search.value = "";
+  els.search.dispatchEvent(new Event("input"));
+  els.search.focus();
+});
+
+els.search.addEventListener("input", () => {
+  els.searchClear.hidden = !els.search.value;
+  query = els.search.value.toLowerCase().split(/\s+/).filter(Boolean);
+  clearSelection();
+  render();
+});
+
+els.search.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") {
+    e.stopPropagation();
+    els.search.value = "";
+    els.search.dispatchEvent(new Event("input"));
+    els.search.blur();
+  } else if (e.key === "Enter" && query.length) {
+    // The first hit that isn't a folder: a pinned item, else an open tab.
+    e.preventDefault();
+    const row = els.scroll.querySelector(".tab.item[data-item], #today .tab[data-tab]");
+    if (row?.dataset.item) openItem(pinById(row.dataset.item));
+    else if (row) browser.tabs.update(Number(row.dataset.tab), { active: true });
+  }
+});
+
+// Typing in the panel (outside a field) goes into the search; Cmd/Ctrl+F focuses it.
+document.addEventListener("keydown", (e) => {
+  if (e.target.closest?.("input, textarea") || !document.getElementById("dialog").hidden) return;
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "f") {
+    e.preventDefault();
+    els.search.focus();
+    els.search.select();
+  } else if (!e.metaKey && !e.ctrlKey && !e.altKey && e.key.length === 1 && e.key !== " ") {
+    els.search.focus();
+  }
+});
+
+// ---------- Drag and drop ----------
+
+let drag = null; // { kind: "tab" | "pin" | "fav", id }
+
+document.addEventListener("dragstart", (e) => {
+  const tabEl = e.target.closest?.(".half[data-tab], .tab[data-tab]:not(.split)");
+  const itemEl = e.target.closest?.("[data-item]");
+  if (tabEl) drag = { kind: "tab", id: Number(tabEl.dataset.tab) };
+  else if (itemEl) drag = { kind: itemEl.classList.contains("tile") ? "fav" : "pin", id: itemEl.dataset.item };
+  else return;
+  (tabEl || itemEl).classList.add("dragging");
+  document.body.classList.add("drag-active");
+  e.dataTransfer.effectAllowed = "move";
+  const url = drag.kind === "tab" ? tabById(drag.id)?.url : [...S.pins, ...S.favorites].find((p) => p.id === drag.id)?.url;
+  if (url) e.dataTransfer.setData("text/uri-list", url);
+  e.dataTransfer.setData("text/plain", url || "");
+});
+
+function clearMarks() {
   for (const el of document.querySelectorAll(".drop-before, .drop-after, .drop-into, .drag-over")) {
     el.classList.remove("drop-before", "drop-after", "drop-into", "drag-over");
-    delete el.dataset.dropDepth;
     el.style.removeProperty("--drop-depth");
   }
 }
 
-const accepts = (e) => e.dataTransfer.types.includes(ITEM_MIME) || e.dataTransfer.types.includes(TAB_MIME);
-
-function readTabData(dt) {
-  try {
-    return JSON.parse(dt.getData(TAB_MIME));
-  } catch {
-    return null;
-  }
-}
-
-let dragKind = null; // "item" | "folder" | "tab" for drags started in this sidebar
-let dragItemId = null; // the pinned item / folder being dragged, if any
-
-document.addEventListener("dragstart", (e) => {
-  const itemEl = e.target.closest?.("[data-item]");
-  dragKind = itemEl ? (itemEl.classList.contains("folder") ? "folder" : "item") : "tab";
-  dragItemId = itemEl?.dataset.item || null;
-  const row = e.target.closest?.("[data-tab]");
-  if (itemEl) {
-    const tab = state.bound.get(itemEl.dataset.item);
-    const found = ArcFox.findItem(localState(), itemEl.dataset.item);
-    e.dataTransfer.setData(ITEM_MIME, itemEl.dataset.item);
-    if (found) e.dataTransfer.setData("text/uri-list", tab?.url || found.item.url);
-    itemEl.classList.add("dragging");
-  } else if (row) {
-    const tab = tabById(Number(row.dataset.tab));
-    e.dataTransfer.setData(TAB_MIME, JSON.stringify({ tabId: Number(row.dataset.tab) }));
-    if (tab) e.dataTransfer.setData("text/uri-list", tab.url);
-    row.classList.add("dragging");
-  } else {
-    return;
-  }
-  e.dataTransfer.effectAllowed = "move";
-  dragging = true;
-  hideMenu();
-});
-
-// Show drop zones (e.g. a hidden favorites area) while an ArcFox drag is over this sidebar.
-document.addEventListener("dragenter", (e) => {
-  if (accepts(e)) document.body.classList.add("drag-active");
-});
-document.addEventListener("dragleave", (e) => {
-  if (!e.relatedTarget) document.body.classList.remove("drag-active");
-});
-document.addEventListener("drop", () => document.body.classList.remove("drag-active"));
-
-/**
- * A tab dragged out of the browser window and dropped on the desktop becomes
- * its own window, the way dragging a tab off Firefox's tab strip does. The
- * drop landed nowhere (dropEffect "none") and the pointer is outside the
- * window's bounds, which windows.get() reports in screen coordinates — the
- * same ones a drag event carries.
- */
+/** A tab dropped outside the browser window opens in a window of its own. */
 async function detachIfDroppedOutside(e, tabId) {
-  if (e.dataTransfer?.dropEffect !== "none") return; // something took the drop
-  const win = await browser.windows.get(state.windowId).catch(() => null);
+  if (e.dataTransfer.dropEffect !== "none") return;
+  // Esc cancels a drag with the pointer wherever it was; a real drop has moved.
+  if (e.screenX === 0 && e.screenY === 0) return;
+  const win = await browser.windows.get(S.windowId).catch(() => null);
   if (!win || win.state === "fullscreen") return;
   const inside =
     e.screenX >= win.left && e.screenX <= win.left + win.width && e.screenY >= win.top && e.screenY <= win.top + win.height;
   if (inside) return;
-  // Esc cancels a drag with the pointer wherever it was; a real drop has moved.
-  if (e.screenX === 0 && e.screenY === 0) return;
-  await browser.windows.create({ tabId }).catch((err) => console.error("Arc: detaching the tab failed", err));
+  await browser.windows.create({ tabId }).catch((err) => console.error("BookmArc: detaching the tab failed", err));
 }
 
 document.addEventListener("dragend", (e) => {
-  const row = e.target.closest?.("[data-tab]");
-  const tabId = dragKind === "tab" && row ? Number(row.dataset.tab) : null;
-  if (tabId !== null) detachIfDroppedOutside(e, tabId);
-  dragKind = null;
-  dragItemId = null;
+  if (drag?.kind === "tab") detachIfDroppedOutside(e, drag.id);
+  drag = null;
   document.body.classList.remove("drag-active");
-  dragging = false;
   for (const el of document.querySelectorAll(".dragging")) el.classList.remove("dragging");
-  clearDropMarks();
-  schedule(true);
+  clearMarks();
 });
 
-function onZoneLeave(e) {
-  if (!e.currentTarget.contains(e.relatedTarget)) clearDropMarks();
+/** Where a drop over `row` lands: before / after it, or into it (folders, middle half). */
+function dropPosition(row, e) {
+  const r = row.getBoundingClientRect();
+  const y = (e.clientY - r.top) / r.height;
+  if (row.classList.contains("folder") && y > 0.25 && y < 0.75) return "into";
+  return y < 0.5 ? "before" : "after";
 }
 
-/** Mark the row under the pointer as drop-before/after; returns nothing. */
-function markRow(e, zone, fallback) {
-  clearDropMarks();
-  const row = e.target.closest(".tab");
-  if (row && zone.contains(row)) {
-    const r = row.getBoundingClientRect();
-    row.classList.add(e.clientY > r.top + r.height / 2 ? "drop-after" : "drop-before");
-  } else if (zone.lastElementChild && zone.tagName === "UL") {
-    zone.lastElementChild.classList.add("drop-after");
-  } else {
-    fallback.classList.add("drag-over");
-  }
-}
-
-/** Where a drop into the pinned list goes: {before, parent} (folders aware). */
 /**
  * A drop after the last row of a folder can land on any level from that row's
  * down to the next row's (top level after the last row): the pointer's x
- * picks it, one level per indent step, and below the list it's the outermost.
- * Stored on the row as data-drop-depth, which also indents the drop line.
+ * picks it, one level per indent step. Returns the entry to drop after.
  */
-function pickDropDepth(e) {
-  const mark = els.pinned.querySelector(".drop-after");
-  if (!mark) return;
-  const depth = Number(mark.dataset.depth || 0);
-  const next = mark.nextElementSibling;
+function climbOut(row, e) {
+  const depth = Number(row.dataset.depth || 0);
+  const next = row.nextElementSibling;
   const nextDepth = next ? Number(next.dataset.depth || 0) : 0;
-  if (nextDepth >= depth) return; // nothing to climb out of here
-  let level = nextDepth;
-  if (e.target.closest(".tab") === mark) {
-    const indent = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--indent")) || 16;
-    const x = e.clientX - mark.getBoundingClientRect().left - 10;
-    level = Math.min(depth, Math.max(nextDepth, Math.round(x / indent)));
-  }
-  mark.dataset.dropDepth = String(level);
-  mark.style.setProperty("--drop-depth", level);
+  if (nextDepth >= depth) return { targetId: row.dataset.item, level: depth };
+  const indent = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--indent")) || 16;
+  const x = e.clientX - row.getBoundingClientRect().left - 10;
+  const level = Math.min(depth, Math.max(nextDepth, Math.round(x / indent)));
+  let target = pinById(row.dataset.item);
+  for (let i = level; i < depth && target; i++) target = pinById(parentOf(target));
+  return { targetId: target?.id || row.dataset.item, level };
 }
 
-function pinnedDropTarget() {
-  const into = els.pinned.querySelector(".drop-into");
-  if (into) return { before: null, parent: into.dataset.item };
-  const mark = els.pinned.querySelector(".drop-before, .drop-after");
-  if (!mark) return { before: null, parent: null };
-  const parent = mark.dataset.parent || null;
-  if (mark.classList.contains("drop-before")) return { before: mark.dataset.item, parent };
-  const depth = Number(mark.dataset.depth || 0);
-  const dropDepth = Number(mark.dataset.dropDepth ?? depth);
-  if (dropDepth < depth) {
-    // After the last row of a folder, further left: after the folder `depth - dropDepth`
-    // levels up, in that folder's own parent.
-    let outer = pinById(mark.dataset.item);
-    for (let i = dropDepth; i < depth && outer; i++) outer = pinById(outer.parent);
-    if (!outer) return { before: null, parent: null };
-    const outerParent = outer.parent || null;
-    const next = mark.nextElementSibling;
-    const sameLevel = next && Number(next.dataset.depth || 0) === dropDepth && (next.dataset.parent || null) === outerParent;
-    return { before: sameLevel ? next.dataset.item : null, parent: outerParent };
-  }
-  // After: the next row at the same level (skipping an open folder's contents).
-  let next = mark.nextElementSibling;
-  while (next && Number(next.dataset.depth || 0) > depth) next = next.nextElementSibling;
-  const sameLevel = next && (next.dataset.parent || null) === parent;
-  return { before: sameLevel ? next.dataset.item : null, parent };
-}
-
-// Favorites grid.
-els.favorites.addEventListener("dragover", (e) => {
-  if (!accepts(e)) return;
-  e.preventDefault();
-  e.dataTransfer.dropEffect = "move";
-  clearDropMarks();
-  const tile = e.target.closest(".tile");
-  if (tile) {
+/** What a drop at `e` would do, or null. */
+function dropTarget(e) {
+  if (!drag) return null;
+  if (e.target.closest("#favorites")) {
+    if (drag.kind === "pin" && isFolder(pinById(drag.id))) return null;
+    const tile = e.target.closest(".tile");
+    if (!tile) return { zone: "favorites", el: els.favorites, where: "end" };
+    // The right half of a tile drops after it, i.e. before the next one.
     const r = tile.getBoundingClientRect();
     const target = e.clientX > r.left + r.width / 2 ? tile.nextElementSibling : tile;
-    if (target) target.classList.add("drop-before");
-    else els.favorites.classList.add("drag-over");
-  } else {
-    els.favorites.classList.add("drag-over");
+    return target ? { zone: "favorites", el: target, targetId: target.dataset.item, where: "before" } : { zone: "favorites", el: els.favorites, where: "end" };
   }
-});
-els.favorites.addEventListener("dragleave", onZoneLeave);
-els.favorites.addEventListener("drop", async (e) => {
+  if (e.target.closest("#pinned, #space-head")) {
+    const row = e.target.closest("#pinned .tab");
+    if (!row) return { zone: "pinned", el: els.pinned, where: "end" };
+    if (row.dataset.item === drag.id) return null;
+    if (drag.kind === "pin" && subtree(S.pins, drag.id).has(row.dataset.item)) return null;
+    const where = dropPosition(row, e);
+    if (where === "after") {
+      const { targetId, level } = climbOut(row, e);
+      if (drag.kind === "pin" && subtree(S.pins, drag.id).has(targetId)) return null;
+      return { zone: "pinned", el: row, targetId, where, level };
+    }
+    return { zone: "pinned", el: row, targetId: row.dataset.item, where };
+  }
+  if (e.target.closest("#today, .divider-row, #new-tab")) {
+    if (drag.kind === "pin" && isFolder(pinById(drag.id))) return null;
+    const row = e.target.closest("#today .tab");
+    if (drag.kind === "tab" && row) {
+      const where = dropPosition(row, e);
+      // After a split view's row means after its second tab.
+      const targetTab = Number(where === "after" && row.dataset.lastTab ? row.dataset.lastTab : row.dataset.tab);
+      return { zone: "today", el: row, targetTab, where };
+    }
+    return { zone: "today", el: els.today };
+  }
+  return null;
+}
+
+const MARK = { before: "drop-before", after: "drop-after", into: "drop-into" };
+
+document.addEventListener("dragover", (e) => {
+  const target = dropTarget(e);
+  clearMarks();
+  if (!target) return;
   e.preventDefault();
-  const before = els.favorites.querySelector(".tile.drop-before")?.dataset.item || null;
-  clearDropMarks();
-  const itemId = e.dataTransfer.getData(ITEM_MIME);
-  if (itemId) await ArcFox.moveItem(itemId, state.favKey, before);
-  else {
-    const data = readTabData(e.dataTransfer);
-    const tab = data && (await browser.tabs.get(data.tabId).catch(() => null));
-    if (tab) await ArcFox.addItem(state.favKey, tab, before);
-  }
-  schedule(true);
+  target.el.classList.add(MARK[target.where] || "drag-over");
+  // The drop line starts at the level the drop lands on.
+  if (target.level !== undefined) target.el.style.setProperty("--drop-depth", target.level);
 });
 
-// Pinned list (and the space header above it).
-for (const zone of [els.pinned, els.spaceHead]) {
-  zone.addEventListener("dragover", (e) => {
-    if (!accepts(e)) return;
-    e.preventDefault();
-    e.dataTransfer.dropEffect = "move";
-    if (zone === els.spaceHead) {
-      clearDropMarks();
-      els.spaceHead.classList.add("drag-over");
-    } else {
-      markRow(e, els.pinned, els.spaceHead);
-      pickDropDepth(e);
-      // Middle of a folder row: drop into the folder (not a folder into itself or its own subfolders).
-      const row = e.target.closest(".tab.folder");
-      const own =
-        row && dragKind === "folder" && (row.dataset.item === dragItemId || ArcFox.descendantIds(state.pins, dragItemId).has(row.dataset.item));
-      if (row && !own) {
-        const r = row.getBoundingClientRect();
-        if (Math.abs(e.clientY - (r.top + r.height / 2)) < r.height * 0.3) {
-          clearDropMarks();
-          row.classList.add("drop-into");
-        }
-      }
-    }
-  });
-  zone.addEventListener("dragleave", onZoneLeave);
-  zone.addEventListener("drop", async (e) => {
-    e.preventDefault();
-    const { before, parent } =
-      zone === els.pinned ? pinnedDropTarget() : { before: state.pins[0]?.id || null, parent: null };
-    clearDropMarks();
-    const key = ArcFox.pinKey(state.spaceId);
-    const itemId = e.dataTransfer.getData(ITEM_MIME);
-    if (itemId) await ArcFox.moveItem(itemId, key, before, { parent });
-    else {
-      const data = readTabData(e.dataTransfer);
-      const tab = data && (await browser.tabs.get(data.tabId).catch(() => null));
-      if (tab) await ArcFox.addItem(key, tab, before, { parent });
-    }
-    schedule(true);
-  });
-}
-
-// Today list: reorder tabs, or drag an item out to make it a normal tab.
-for (const zone of [els.today, els.newTab]) {
-  zone.addEventListener("dragover", (e) => {
-    if (!accepts(e)) return;
-    e.preventDefault();
-    e.dataTransfer.dropEffect = "move";
-    markRow(e, els.today, els.today);
-  });
-  zone.addEventListener("dragleave", onZoneLeave);
-  zone.addEventListener("drop", onTodayDrop);
-}
-
-// The strip above the list (divider, "New Tab · Clear") is part of the list for
-// dropping: the mark sits on the first row, and a drop there moves the tab to
-// the top. Without this the mark stays on screen while the pointer is over a
-// strip that accepts nothing, and the drop is silently refused.
-document.querySelector(".divider-row")?.addEventListener("dragover", (e) => {
-  if (!accepts(e)) return;
+document.addEventListener("drop", async (e) => {
+  const target = dropTarget(e);
+  const source = drag;
+  clearMarks();
+  if (!target || !source) return;
   e.preventDefault();
-  e.dataTransfer.dropEffect = "move";
-  clearDropMarks();
-  els.today.firstElementChild?.classList.add("drop-before");
-});
-document.querySelector(".divider-row")?.addEventListener("dragleave", onZoneLeave);
-document.querySelector(".divider-row")?.addEventListener("drop", onTodayDrop);
+  const tab = source.kind === "tab" ? tabById(source.id) : null;
+  const pin = source.kind === "pin" ? pinById(source.id) : null;
+  const fav = source.kind === "fav" ? S.favorites.find((f) => f.id === source.id) : null;
 
-async function onTodayDrop(e) {
-  e.preventDefault();
-  const mark = els.today.querySelector(".drop-before, .drop-after");
-  const after = !!mark?.classList.contains("drop-after");
-  const targetId = mark ? Number(after ? mark.dataset.lastTab || mark.dataset.tab : mark.dataset.tab) : null;
-  clearDropMarks();
-
-  let tabId = null;
-  const itemId = e.dataTransfer.getData(ITEM_MIME);
-  if (itemId) {
-    const st = await ArcFox.getState();
-    const found = ArcFox.findItem(st, itemId);
-    const tab = await ArcFox.removeItem(itemId, state.spaceId);
-    if (tab) tabId = tab.id;
-    else if (found) tabId = (await newTabInSpace(found.item.url)).id;
-  } else {
-    tabId = readTabData(e.dataTransfer)?.tabId ?? null;
-  }
-  if (tabId === null) return;
-
-  try {
-    const fresh = await browser.tabs.query({ windowId: state.windowId });
-    const cur = await browser.tabs.get(tabId);
-    const target = targetId !== null && fresh.find((t) => t.id === targetId);
-    let index = target ? target.index + (after ? 1 : 0) : fresh.length;
-    if (cur.windowId === state.windowId && cur.index < index) index -= 1;
-    if (cur.windowId !== state.windowId || cur.index !== index) {
-      await browser.tabs.move(tabId, { windowId: state.windowId, index });
+  if (target.zone === "favorites") {
+    if (tab) await addFavorite(tab);
+    if (pin) await pinToFavorite(pin, target.targetId);
+    if (fav && target.targetId !== fav.id) {
+      const rest = S.favorites.filter((f) => f.id !== fav.id);
+      const at = target.targetId ? rest.findIndex((f) => f.id === target.targetId) : -1;
+      rest.splice(at >= 0 ? at : rest.length, 0, fav);
+      await store.saveFavorites(rest);
     }
-    // Tab dragged in from another window's sidebar joins this space.
-    if (cur.windowId !== state.windowId) await ArcFox.setTabSpace(tabId, state.spaceId);
-  } catch (err) {
-    console.error("ArcFox: tab drop failed", err);
-  }
-  schedule(true);
-}
-
-/* ---------- Live updates ---------- */
-
-// The command bar tells the sidebar where a tab is headed the moment Enter is
-// pressed: Firefox only reports the new URL once the page commits, which is a
-// slow beat to wait for on a cold connection.
-const pendingNav = new Map(); // tabId -> { label, at }
-
-function noteNavigation(tabId, label) {
-  pendingNav.set(tabId, { label, at: Date.now() });
-  setTimeout(() => {
-    if (pendingNav.get(tabId)?.at <= Date.now() - 30000) {
-      pendingNav.delete(tabId);
-      schedule();
+  } else if (target.zone === "pinned") {
+    if (tab) await pinTab(tab, target.targetId, target.where);
+    if (pin) await savePins(placeBlock(S.pins, blockOf(S.pins, pin.id), target.targetId, target.where));
+    if (fav) await favoriteToPin(fav, target.targetId, target.where);
+  } else if (target.zone === "today") {
+    if (tab && target.targetTab && target.targetTab !== tab.id) {
+      const other = tabById(target.targetTab);
+      const index = other.index + (target.where === "after" ? 1 : 0) - (tab.index < other.index ? 1 : 0);
+      await browser.tabs.move(tab.id, { index });
     }
-  }, 30000);
-  schedule();
+    if (pin) await unpin([pin.id]);
+    if (fav) await removeFavorite(fav.id);
+  }
+});
+
+// ---------- Startup ----------
+
+for (const event of [
+  browser.tabs.onCreated,
+  browser.tabs.onRemoved,
+  browser.tabs.onUpdated,
+  browser.tabs.onActivated,
+  browser.tabs.onMoved,
+  browser.tabs.onAttached,
+  browser.tabs.onDetached,
+  browser.storage.onChanged,
+  // The pinned tabs are the bookmarks bar: changes made in Chrome show up here.
+  browser.bookmarks.onCreated,
+  browser.bookmarks.onRemoved,
+  browser.bookmarks.onChanged,
+  browser.bookmarks.onMoved,
+]) {
+  event.addListener(refresh);
 }
 
-browser.runtime.onMessage.addListener((msg) => {
-  if (msg?.type === "arcfox:changed") schedule(true);
-  if (msg?.type === "arcfox:navigating" && msg.tabId !== undefined) noteNavigation(msg.tabId, msg.label);
-  if (msg?.type === "arcfox:focus-address" && msg.windowId === state.windowId) {
-    browser.storage.session.remove("focusAddress");
-    address.focus();
-  }
-});
+// The background page goes to sleep when idle; holding a port keeps it awake
+// (and Cmd/Ctrl+T quick) while the sidebar is open.
+browser.runtime.connect({ name: "sidebar" });
 
-browser.storage.onChanged.addListener((changes, area) => {
-  if (area === "session" && ArcFox.BADGES_KEY in changes) schedule();
-  if (area !== "local") return;
-  const keys = Object.keys(changes);
-  // Sizing or the divider's pin changed in another window's sidebar.
-  if (keys.includes(SIZING_KEY)) applySizing((sizing = changes[SIZING_KEY].newValue || {}));
-  if (keys.includes(TODAY_FLOW)) applyTodayFlow(!!changes[TODAY_FLOW].newValue);
-  if (keys.includes(PINNED_HEIGHT)) applyPinnedHeight(changes[PINNED_HEIGHT].newValue);
-  const data = keys.some((k) => k === ArcFox.SPACES_KEY || k.startsWith(ArcFox.FAV_KEY) || k.startsWith(ArcFox.PIN_PREFIX));
-  if (data) schedule(true);
-  else if (keys.includes(ArcFox.ICON_KEY)) schedule();
-});
-
-// Firefox creates its blank tab at the end of the list; Arc replaces it with a
-// command-bar tab at the top a moment later. Draw it at the top from the start.
-const preSwapTabs = new Set();
-// Tabs Arc is about to throw away: a Cmd+T while the command bar is open.
-const doomedTabs = new Set();
-
-browser.tabs.onCreated.addListener((tab) => {
-  // A fresh Cmd+T tab often reports about:blank before its page loads.
-  if (tab.openerTabId === undefined && (ArcFox.isFirefoxNewTab(tab.url) || !tab.url || tab.url === "about:blank")) {
-    const set = openCommandBar() ? doomedTabs : preSwapTabs;
-    set.add(tab.id);
-    setTimeout(() => {
-      set.delete(tab.id);
-      schedule();
-    }, 1500);
-  }
-  schedule(true);
-  // Background tags new tabs with a space shortly after creation.
-  setTimeout(() => schedule(true), 400);
-});
-
-// Right after onRemoved, tabs.query() can still return the closing tab; keep
-// it out of the list until Firefox has really dropped it.
-const removedTabs = new Set();
-
-browser.tabs.onRemoved.addListener((tabId) => {
-  preSwapTabs.delete(tabId);
-  doomedTabs.delete(tabId);
-  pendingNav.delete(tabId);
-  lastIcon.delete(tabId);
-  removedTabs.add(tabId);
-  setTimeout(() => removedTabs.delete(tabId), 5000);
-  state.tabItem.delete(tabId);
-  state.tabSpace.delete(tabId);
-  // Drop the row now rather than after the refresh below: the page is already
-  // gone, and the refresh has storage reads and a tabs.query to get through
-  // first, which is long enough to see.
-  if (state.windowId !== null && state.tabs.some((t) => t.id === tabId)) {
-    state.tabs = state.tabs.filter((t) => t.id !== tabId);
-    for (const [itemId, tab] of state.bound) if (tab.id === tabId) state.bound.delete(itemId);
-    render();
-  }
-  schedule();
-});
-browser.tabs.onUpdated.addListener((tabId, changes) => {
-  // The page committed (or went somewhere else): the guess isn't needed.
-  if (changes.url !== undefined && !ArcFox.isNewTabUrl(changes.url)) pendingNav.delete(tabId);
-  schedule();
-}, {
-  properties: ["title", "status", "favIconUrl", "pinned", "discarded", "audible", "mutedInfo", "url", "hidden", "splitViewId"],
-});
-for (const ev of ["onActivated", "onMoved", "onAttached", "onDetached"]) {
-  browser.tabs[ev].addListener(() => schedule(ev !== "onMoved"));
-}
-
-/** Hold a port so the background page stays awake while the sidebar is open. */
-function keepBackgroundAwake() {
-  const port = browser.runtime.connect({ name: "arcsidebar:sidebar" });
-  // Only an extension reload drops the port; reconnect once it is back.
-  port.onDisconnect.addListener(() => setTimeout(keepBackgroundAwake, 1000));
-}
-
-(async () => {
-  keepBackgroundAwake();
-  const win = await browser.windows.getCurrent();
-  state.windowId = win.id;
-  // Private windows show tabs only — no favorites, pins, folders or spaces.
-  state.private = win.incognito;
-  document.body.classList.toggle("private", state.private);
-  await refresh();
-  const { focusAddress } = await browser.storage.session.get("focusAddress");
-  if (focusAddress === state.windowId) {
-    browser.storage.session.remove("focusAddress");
-    address.focus();
-  }
-})();
+// ?window=<id> shows another window's tabs: lets the sidebar be opened as a page while developing.
+S.windowId = Number(new URLSearchParams(location.search).get("window")) || (await browser.windows.getCurrent()).id;
+// Tabs opened before their bookmark existed (or while the extension was off) join their pinned rows.
+await store.adoptAll().catch((err) => console.error("BookmArc: binding open tabs failed", err));
+refresh();

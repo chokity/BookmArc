@@ -1,4 +1,4 @@
-Emoji data (editor/emoji.json) is derived from unicode-emoji-json and emojilib.
+Emoji data (shared/emoji.json) is derived from unicode-emoji-json and emojilib.
 
 === unicode-emoji-json ===
 The MIT License (MIT)

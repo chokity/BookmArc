@@ -1,4 +1,4 @@
-/* The still bar must not look interactive while Arc swaps this tab. */
+/* The still bar must not look interactive while BookmArc swaps this tab. */
 #q:disabled {
   color: var(--fg);
   -webkit-text-fill-color: var(--fg);

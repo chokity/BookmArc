@@ -1,6 +1,7 @@
 /* Color tokens shared by the sidebar and the space editor. */
 :root {
-  --space: #af51f5; /* set per space from JS */
+  --space: #f3dddb; /* the theme color, set from JS (shared/theme.js) */
+  --on-space: #1d1b24; /* text on the theme color */
   --base: #efedf5;
   --fg: #1d1b24;
   --muted: #6d6879;

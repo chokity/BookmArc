@@ -9,7 +9,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
-const ADDON_ID = "arc@sidebar-pliha";
+const ADDON_ID = "bookmarc@pliha";
 const API = "https://addons.mozilla.org/api/v5/addons/addon";
 
 for (const line of fs.existsSync(".env") ? fs.readFileSync(".env", "utf8").split("\n") : []) {
