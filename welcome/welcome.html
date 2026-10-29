@@ -3,14 +3,14 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Welcome to Arcsidebar</title>
+  <title>Welcome to BookmArc</title>
   <link rel="icon" href="../icons/icon-32.png">
   <link rel="stylesheet" href="welcome.css">
 </head>
 <body>
   <main class="page">
     <aside class="stage" aria-hidden="true">
-      <!-- A miniature of the Arc sidebar; hovering a feature animates its part. -->
+      <!-- A miniature of the sidebar; hovering a feature animates its part. -->
       <div class="mini" id="mini">
         <div class="m-top">
           <span class="m-lights"><i></i><i></i><i></i></span>
@@ -27,7 +27,7 @@
           <i style="--c:#ff613d"></i><i style="--c:#37adff"></i><i style="--c:#51cd00"></i><i style="--c:#ffcb00"></i>
           <i style="--c:#af51f5"></i><i style="--c:#00c79a"></i><i style="--c:#ff9f00"></i><i style="--c:#ff4bda"></i>
         </div>
-        <div class="m-space">Personal</div>
+        <div class="m-space">Bookmarks</div>
         <div class="m-folder">
           <div class="m-row m-folder-head"><span class="m-ficon"></span>Research</div>
           <div class="m-children">
@@ -43,11 +43,6 @@
         </div>
         <div class="m-row"><span class="m-fav" style="--c:#ffcb00"></span>Calendar</div>
         <div class="m-row"><span class="m-fav" style="--c:#af51f5"></span>Design review</div>
-        <div class="m-footer">
-          <span class="m-spacer"></span>
-          <span class="m-dots"><i class="on"></i><i></i><i></i></span>
-          <span class="m-add">+</span>
-        </div>
       </div>
       <div class="m-bar"><span class="m-caret">github</span></div>
     </aside>
@@ -55,9 +50,8 @@
     <section class="copy">
       <header class="intro">
         <img class="logo" src="../icons/icon-128.png" alt="" width="64" height="64">
-        <h1>Arcsidebar Fork</h1>
-        <p>Your tabs live in the sidebar now. Hover a feature to see where it lives.</p>
-        <p class="from-arc">Coming from Arc? <a href="../import/import.html">Import your spaces, pinned tabs and favorites</a>.</p>
+        <h1>BookmArc</h1>
+        <p>Your tabs and your bookmarks toolbar live in the sidebar now. Hover a feature to see where it lives.</p>
       </header>
 
       <div class="features">
@@ -66,14 +60,9 @@
           <p>Drag a tab into the grid at the top. Each favorite keeps its own tab, and closing it leaves the icon in place.</p>
         </div>
 
-        <div class="feature" tabindex="0" data-demo="spaces">
-          <h2>Spaces</h2>
-          <p>Separate sets of tabs, each with its own color and, if you want, its own logins. Switch from the footer, by swiping, or with <kbd>⌃1</kbd>–<kbd>⌃5</kbd>.</p>
-        </div>
-
         <div class="feature" tabindex="0" data-demo="folders">
-          <h2>Pinned tabs and folders</h2>
-          <p>Drag tabs above the line to pin them to a space. Shift- or Command-click several, then right-click and choose New Folder.</p>
+          <h2>Your bookmarks toolbar, pinned</h2>
+          <p>The pinned tabs <em>are</em> your bookmarks toolbar, folders included: pin, rename, sort or unpin here and the bookmarks change, and the other way round. A folder keeps its open tabs in view when you close it, and “Set Color…” gives it a color.</p>
         </div>
 
         <div class="feature" tabindex="0" data-demo="bar">
@@ -82,13 +71,13 @@
         </div>
 
         <div class="feature" tabindex="0" data-demo="address">
-          <h2>Address bar in the sidebar</h2>
-          <p>Shows the site you’re on. Click it to edit the address or search. <kbd>⌥⇧L</kbd> jumps there.</p>
+          <h2>Search</h2>
+          <p>The field at the top finds bookmarks and tabs by name or address and opens the folders they’re in. Start typing anywhere in the sidebar.</p>
         </div>
 
         <div class="feature" tabindex="0" data-demo="hide">
           <h2>Hide the sidebar</h2>
-          <p>Firefox’s own sidebar toggle gives the page the whole window, and brings it back. Arc’s extensions row hides with it.</p>
+          <p>Firefox’s own sidebar toggle gives the page the whole window, and brings it back. The extensions row hides with it.</p>
         </div>
 
         <div class="feature" tabindex="0" data-demo="split">
@@ -103,28 +92,28 @@
       </div>
 
       <section class="setup" aria-labelledby="setup-title">
-        <h2 id="setup-title">Give Arcsidebar the whole window</h2>
-        <p class="setup-lede">Firefox doesn’t let extensions hide its own tab strip and toolbar. A small setup script does it once: it finds the Firefox profile with Arcsidebar and adds its layout, keeping any customizations you already have.</p>
+        <h2 id="setup-title">Give the sidebar the whole window</h2>
+        <p class="setup-lede">Firefox doesn’t let extensions hide its own tab strip and toolbar. A small setup script does it once: it finds the Firefox profile with BookmArc and adds its layout, keeping any customizations you already have.</p>
 
         <div class="script" data-os="unix">
           <p>Paste this into Terminal, then quit Firefox and open it again:</p>
-          <pre><code id="cmd-unix">curl -fsSL https://raw.githubusercontent.com/chokity/arc/main/extras/setup/arc-setup.txt | bash</code></pre>
+          <pre><code id="cmd-unix">curl -fsSL https://raw.githubusercontent.com/chokity/BookmArc/main/extras/setup/bookmarc-setup.txt | bash</code></pre>
           <button class="copy-btn" data-copy="cmd-unix">Copy command</button>
-          <p class="script-alt">Or <a href="https://raw.githubusercontent.com/chokity/arc/main/extras/setup/arc-setup.txt" download="arc-setup.sh">download the script</a> to read it first.</p>
+          <p class="script-alt">Or <a href="https://raw.githubusercontent.com/chokity/BookmArc/main/extras/setup/bookmarc-setup.txt" download="bookmarc-setup.sh">download the script</a> to read it first.</p>
         </div>
         <div class="script" data-os="windows" hidden>
           <p>Paste this into PowerShell, then quit Firefox and open it again:</p>
-          <pre><code id="cmd-windows">irm https://raw.githubusercontent.com/chokity/arc/main/extras/setup/arc-setup.ps1 | iex</code></pre>
+          <pre><code id="cmd-windows">irm https://raw.githubusercontent.com/chokity/BookmArc/main/extras/setup/bookmarc-setup.ps1 | iex</code></pre>
           <button class="copy-btn" data-copy="cmd-windows">Copy command</button>
-          <p class="script-alt">Or <a href="https://raw.githubusercontent.com/chokity/arc/main/extras/setup/arc-setup.ps1" download="arc-setup.ps1">download the script</a> to read it first.</p>
+          <p class="script-alt">Or <a href="https://raw.githubusercontent.com/chokity/BookmArc/main/extras/setup/bookmarc-setup.ps1" download="bookmarc-setup.ps1">download the script</a> to read it first.</p>
         </div>
-        <p class="script-note">Run it again after updating Arcsidebar to refresh the layout.</p>
+        <p class="script-note">Run it again after updating BookmArc to refresh the layout.</p>
 
         <details class="manual">
           <summary>Set it up by hand instead</summary>
           <ol class="steps">
             <li>
-              <p>Press <kbd>⌘L</kbd> to open Firefox’s address bar, go to <code>about:config</code>, search for <code>toolkit.legacyUserProfileCustomizations.stylesheets</code> and set it to <b>true</b>.</p>
+              <p>Click Firefox’s address bar, go to <code>about:config</code>, search for <code>toolkit.legacyUserProfileCustomizations.stylesheets</code> and set it to <b>true</b>.</p>
             </li>
             <li>
               <p>The same way, go to <code>about:support</code> and click <b>Open Folder</b> next to Profile Folder.</p>
@@ -134,11 +123,11 @@
               <button class="copy-btn" data-file="../extras/userChrome.css">Copy userChrome.css</button>
             </li>
             <li>
-              <p>Back in the profile folder, save a file named <code>user.js</code> with this content. It opens Arcsidebar at startup and turns on horizontal tabs:</p>
+              <p>Back in the profile folder, save a file named <code>user.js</code> with this content. It opens the sidebar at startup and turns on horizontal tabs:</p>
               <button class="copy-btn" data-file="../extras/user.js">Copy user.js</button>
             </li>
             <li>
-              <p>Open <code>about:keyboard</code> and clear Firefox’s <b>New tab</b> and <b>Close tab</b> shortcuts, so <kbd>⌘T</kbd> opens Arcsidebar’s command bar and <kbd>⌘W</kbd> leaves a space its last tab. (The setup script does this by writing <code>customKeys.json</code>.)</p>
+              <p>Open <code>about:keyboard</code> and clear Firefox’s <b>New tab</b>, <b>Close tab</b> and address-bar (<kbd>⌘L</kbd>) shortcuts, so <kbd>⌘T</kbd> opens the command bar, <kbd>⌘W</kbd> keeps a window’s last tab and <kbd>⌘L</kbd> edits the current address in the command bar. (The setup script does this by writing <code>customKeys.json</code>.)</p>
             </li>
             <li>
               <p>Quit Firefox with <kbd>⌘Q</kbd> and open it again.</p>

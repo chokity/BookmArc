@@ -1,5 +1,6 @@
-/* global ArcFox */
-/* Address/search suggestions shared by the sidebar address bar and the command bar. */
+/* Address/search suggestions for the command bar. */
+
+import { isNewTabUrl } from "./store.js";
 
 /** Turn typed text into {url} or {search}. */
 export function resolve(text) {
@@ -15,7 +16,7 @@ export function resolve(text) {
 
 /** Domain for http(s) pages, the URL otherwise, "" for new-tab pages. */
 export function pretty(url) {
-  if (!url || ArcFox.isNewTabUrl(url)) return "";
+  if (!url || isNewTabUrl(url)) return "";
   try {
     const u = new URL(url);
     if (/^https?:$/.test(u.protocol)) return u.hostname.replace(/^www\./, "");
@@ -48,7 +49,7 @@ export async function switchToTab(tab, fromWindowId) {
  *   {kind: "go"|"search"|"tab"|"history", label, sub, url?, icon?, tab?, target?}
  * `tab` items switch to that tab; the others navigate to `target` ({url} or {search}).
  */
-export async function suggestFor(text, { max = 12, container = null } = {}) {
+export async function suggestFor(text, { max = 12 } = {}) {
   const out = [];
   const r = resolve(text);
   if (r?.url) out.push({ kind: "go", label: pretty(r.url) || r.url, sub: "Open", target: r });
@@ -58,7 +59,6 @@ export async function suggestFor(text, { max = 12, container = null } = {}) {
   const seen = new Set();
   const tabs = (await browser.tabs.query({}))
     .filter((t) => !t.active && ((t.title || "").toLowerCase().includes(q) || (t.url || "").toLowerCase().includes(q)))
-    .filter((t) => !container || t.cookieStoreId === container)
     .slice(0, 4);
   for (const t of tabs) {
     seen.add(t.url);

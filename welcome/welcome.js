@@ -19,10 +19,7 @@ for (const feature of document.querySelectorAll(".feature")) {
 // Shortcuts are written for macOS; show the Windows/Linux keys elsewhere.
 if (!navigator.platform.startsWith("Mac")) {
   const keys = {
-    "⌃1": "Alt+Shift+1",
-    "⌃5": "Alt+Shift+5",
     "⌘T": "Ctrl+T",
-    "⌥⇧L": "Alt+Shift+L",
     "⌥⇧S": "Alt+Shift+S",
     "⌘Q": "Ctrl+Q",
     "⌘L": "Ctrl+L",
@@ -34,7 +31,7 @@ if (!navigator.platform.startsWith("Mac")) {
 const windows = navigator.platform.startsWith("Win");
 for (const el of document.querySelectorAll(".script")) el.hidden = (el.dataset.os === "windows") !== windows;
 
-// Copy the setup command, or the files shipped with Arc.
+// Copy the setup command, or the files shipped with the add-on.
 for (const button of document.querySelectorAll("button.copy-btn")) {
   const label = button.textContent;
   button.addEventListener("click", async () => {

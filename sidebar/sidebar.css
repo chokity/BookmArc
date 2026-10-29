@@ -4,7 +4,7 @@
 
 html, body { height: 100%; }
 
-/* Row sizing, Arc's by default; "Sizing…" in the space menu overrides these. */
+/* Row sizing; "Sizing…" in the menu overrides these. */
 :root {
   --row-font: 14px;
   --row-height: 36px;
@@ -21,7 +21,7 @@ body {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  background: color-mix(in srgb, var(--space) var(--tint), var(--base));
+  background: var(--bg, color-mix(in srgb, var(--space) var(--tint), var(--base))); /* --bg: exact, from theme.js */
   color: var(--fg);
   font: 13px/1.3 system-ui, -apple-system, "Segoe UI", sans-serif;
   user-select: none;
@@ -49,44 +49,24 @@ svg { display: block; }
 .icon-btn:disabled { opacity: 0.4; }
 .icon-btn svg { width: 15px; height: 15px; }
 
-/* ---------- Top: nav + address ---------- */
+/* ---------- Search ---------- */
 
-.top { display: flex; flex-direction: column; gap: 6px; }
-
-/* Firefox's own toolbar stays on top (see extras/userChrome.css): it has the
-   back/forward/reload buttons, the address bar and the extension buttons, so
-   none of the top block is needed here. */
-.top { display: none !important; }
-
-.nav-row .icon-btn { width: 28px; height: 26px; }
-
-.address {
-  position: relative;
+.search {
+  flex: none;
   display: flex;
   align-items: center;
-  gap: 4px;
-  height: 36px;
-  padding: 0 4px 0 12px;
+  gap: 8px;
+  height: 34px;
+  padding: 0 10px;
   border-radius: var(--radius);
   background: var(--field);
+  color: var(--muted);
   transition: background 120ms, box-shadow 120ms;
 }
-.address:hover { background: color-mix(in srgb, var(--field), #000 4%); }
-.address.editing { background: var(--field-focus); box-shadow: var(--shadow), 0 0 0 2px color-mix(in srgb, var(--space) 55%, transparent); }
-
-.lock { flex: none; width: 12px; color: var(--muted); display: none; }
-.lock svg { width: 12px; height: 12px; }
-.lock.secure { display: block; }
-.address.editing .lock,
-.address.new-tab .lock { display: none; }
-
-/* Favicon shown inside the field while editing (Arc's first dropdown row). */
-.addr-icon { display: none; flex: none; width: 16px; height: 16px; place-items: center; color: var(--muted); font-size: 14px; }
-.addr-icon img { width: 16px; height: 16px; }
-.addr-icon .letter { width: 16px; height: 16px; font-size: 9px; border-radius: 4px; }
-.address.editing .addr-icon { display: grid; margin-right: 4px; }
-
-#url {
+.search:hover { background: color-mix(in srgb, var(--field), #000 4%); }
+.search:focus-within { background: var(--field-focus); box-shadow: var(--shadow), 0 0 0 2px color-mix(in srgb, var(--space) 55%, transparent); }
+.search svg { width: 14px; height: 14px; flex: none; }
+#search {
   flex: 1;
   min-width: 0;
   height: 100%;
@@ -95,73 +75,32 @@ svg { display: block; }
   background: none;
   color: var(--fg);
   font: inherit;
-  text-overflow: ellipsis;
 }
-#url::placeholder { color: var(--muted); }
-#url::selection { background: color-mix(in srgb, var(--space) 35%, transparent); }
+#search::placeholder { color: var(--muted); }
+/* Our own "×" (search-clear) instead of Chrome's: Firefox has none, and both look the same this way. */
+#search::-webkit-search-cancel-button { display: none; }
+.search-clear { width: 20px; height: 20px; margin-inline-end: -4px; border-radius: 50%; }
+.search-clear svg { width: 11px; height: 11px; }
+.search-clear[hidden] { display: none; }
 
-.copy { opacity: 0.7; }
-.address:hover .copy { opacity: 1; }
-.address.editing .copy { display: none; }
-.copy.done { color: var(--space); opacity: 1; }
-
-/* Editing: the field lifts into a floating panel, suggestions continue below it. */
-.address.editing {
-  z-index: 25;
-  height: 38px;
-  margin: -1px; /* grows outward without pushing the sidebar down */
-  padding: 0 8px 0 10px;
-  background: var(--menu-bg);
-  border-radius: 12px;
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.22), 0 0 0 0.5px rgba(0, 0, 0, 0.1);
+/* While searching: hits only. The pinned list shows even when folded away, and
+   what only makes sense for the whole list steps aside. */
+body.searching #pinned { max-height: none; overflow: visible; }
+body.searching #pinned:not(:has(.tab))::after { content: none; }
+body.searching .divider-row, body.searching #new-tab { display: none; }
+body.no-hits .scroll::before {
+  content: "No bookmarks or tabs found";
+  padding: 16px 8px;
+  color: var(--muted);
+  font-size: 12px;
+  text-align: center;
 }
-.address.editing:has(.suggest:not([hidden])) { border-radius: 12px 12px 0 0; }
-
-.suggest {
-  position: absolute;
-  z-index: 25;
-  left: 0; right: 0; top: 100%;
-  margin: 0;
-  padding: 0 4px 4px;
-  list-style: none;
-  border-radius: 0 0 12px 12px;
-  background: var(--menu-bg);
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.22), 0 0 0 0.5px rgba(0, 0, 0, 0.1);
-  clip-path: inset(0 -60px -60px -60px); /* no shadow seam against the field */
-  max-height: 70vh;
-  overflow-y: auto;
-}
-.suggest li {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  height: 30px;
-  padding: 0 6px 0 4px;
-  border-radius: 7px;
-  font-size: 12.5px;
-  cursor: default;
-}
-.suggest li.selected { background: var(--space); color: #fff; }
-.s-chip {
-  flex: none;
-  width: 20px; height: 20px;
-  display: grid;
-  place-items: center;
-  border-radius: 5px;
-}
-.suggest li.selected .s-chip { background: #fff; }
-.s-icon { width: 14px; height: 14px; display: grid; place-items: center; color: var(--muted); font-size: 14px; }
-.s-icon img { width: 14px; height: 14px; }
-.s-icon .letter { width: 14px; height: 14px; font-size: 8px; border-radius: 3px; }
-.s-label { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.s-sub { display: none; flex: none; max-width: 40%; font-size: 10.5px; opacity: 0.8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.suggest li.selected .s-sub { display: block; }
 
 /* ---------- Favorites grid ---------- */
 
 .fav-grid {
   display: grid;
-  /* Four across at Arc's usual width. Dragging the sidebar wider adds columns
+  /* Four across at the usual width. Dragging the sidebar wider adds columns
      rather than inflating the tiles — favorites stay a quiet strip, not the
      biggest thing in the sidebar. The panel is its own document, so these
      widths are the sidebar's, not the window's. */
@@ -221,7 +160,6 @@ body.drag-active .fav-drop-text { display: inline; }
 .tile:hover { background: var(--tile-hover); }
 .tile:active { transform: scale(0.96); }
 .tile.active { background: var(--tile-active); box-shadow: var(--shadow); }
-.tile:not(.open) .icon { opacity: 0.45; filter: saturate(0.4); }
 .tile.dragging { opacity: 0.4; }
 .tile.drop-before::before {
   content: "";
@@ -248,7 +186,7 @@ body.drag-active .fav-drop-text { display: inline; }
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  /* A hairline, and only while the list is in use — Arc's sidebar shouldn't
+  /* A hairline, and only while the list is in use — the sidebar shouldn't
      spend width on a scrollbar. */
   scrollbar-width: thin;
   scrollbar-color: transparent transparent;
@@ -278,13 +216,6 @@ body.drag-active .fav-drop-text { display: inline; }
 .space-head .chevron { display: grid; place-items: center; width: 16px; height: 16px; opacity: 0.7; }
 .space-head .chevron svg { width: 12px; height: 12px; transform: rotate(90deg); transition: transform 150ms ease; }
 body.pins-collapsed .space-head .chevron svg { transform: none; }
-/* Like Arc: an expanded space shows its icon where the chevron sits; the
-   chevron comes back while collapsed, and on hover to show it folds. */
-#space-icon { display: grid; place-items: center; width: 16px; height: 16px; font-size: 14px; line-height: 1; }
-#space-icon[hidden],
-body.pins-collapsed #space-icon,
-.space-head:hover #space-icon { display: none; }
-body:not(.pins-collapsed) .space-head.has-icon:not(:hover) .chevron { display: none; }
 .space-title { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .space-more { visibility: hidden; width: 24px; height: 24px; }
 .space-head:hover .space-more, .space-more:focus-visible { visibility: visible; }
@@ -299,12 +230,12 @@ body:not(.pins-collapsed) .space-head.has-icon:not(:hover) .chevron { display: n
   scrollbar-color: transparent transparent;
 }
 #pinned:hover, #pinned:focus-within { scrollbar-color: var(--divider) transparent; }
-body.pins-collapsed #pinned { display: none; }
+/* Folded away: only the pinned tabs that are open stay (see pinnedRows). */
+body.pins-collapsed #pinned:not(:has(.tab))::after { content: none; }
 /* Open tabs not docked (the divider's pin is off): the pinned list takes all
    the room it needs and the open tabs follow it, the whole area scrolling. */
 body.today-flow #pinned { max-height: none; overflow: visible; }
 .space-head.drag-over { background: var(--row-hover); }
-.space-emoji { font-size: 13px; }
 
 /* Everything under the space header keeps its height; the area scrolls. */
 .scroll > * { flex-shrink: 0; }
@@ -325,10 +256,21 @@ body:not(.today-flow):not(.pins-collapsed) .divider-row:hover .divider,
 .divider-row button { cursor: default; }
 
 /* The pin at the divider's left: docks the open tabs (pinned list scrolls on its own) or not. */
-.dock-btn { width: 20px; height: 20px; margin-inline-end: 6px; color: var(--muted); }
-.dock-btn svg { width: 13px; height: 13px; }
-body.today-flow .dock-btn { opacity: 0.6; }
-.dock-btn:hover { opacity: 1; }
+/* Like "Clear": shown only while the sidebar is hovered, and hidden means no
+   width, so the divider runs the whole way instead of stopping at an empty spot. */
+.dock-btn {
+  width: 0;
+  height: 20px;
+  margin-inline-end: 0;
+  overflow: hidden;
+  opacity: 0;
+  color: var(--muted);
+  transition: opacity 120ms, width 160ms, margin-inline-end 160ms;
+}
+.dock-btn svg { flex: none; width: 13px; height: 13px; }
+body:hover .dock-btn, .dock-btn:focus-visible { width: 20px; margin-inline-end: 6px; opacity: 1; }
+body.today-flow:hover .dock-btn { opacity: 0.6; }
+body .dock-btn:hover { opacity: 1; }
 
 /* "Clear" is hidden until the sidebar is hovered, and hidden means no width:
    otherwise the divider stops short of an invisible label and reads as a
@@ -354,32 +296,65 @@ body:hover .link-btn {
 }
 .link-btn:hover { color: var(--fg); }
 
-.new-tab {
+/* ---------- Status bar ---------- */
+
+/* Pinned to the bottom, under the scrolling list: the tab count and "Close All". */
+.status-bar {
   flex: none;
   display: flex;
   align-items: center;
-  gap: 10px;
-  height: var(--row-height);
-  padding: 0 10px;
+  gap: 8px;
+  height: 30px;
+  margin-top: -8px; /* the body's gap: the line sits right under the list */
+  padding: 0 2px 0 6px;
+  border-top: 1px solid var(--divider);
+  color: var(--muted);
+  font-size: 11px;
+}
+.tab-count { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.close-all {
+  flex: none;
+  height: 22px;
+  padding: 0 8px;
   border: 0;
-  border-radius: 10px;
+  border-radius: 6px;
   background: none;
   color: var(--muted);
-  font-size: var(--row-font);
-  text-align: left;
+  font-size: 11px;
+  white-space: nowrap;
   cursor: default;
+  transition: background 120ms, color 120ms;
 }
-.new-tab:hover { background: var(--row-hover); color: var(--fg); }
-.new-tab.active { background: var(--row-active); box-shadow: var(--shadow); color: var(--fg); }
-.plus { width: 16px; text-align: center; font-size: 17px; line-height: 1; }
+.close-all:hover:not(:disabled) { background: var(--btn-hover); color: var(--fg); }
+.close-all:disabled { opacity: 0.4; }
+/* Armed: the next click closes everything. */
+.close-all.armed, .close-all.armed:hover { background: #e5484d; color: #fff; }
+
+/* "+": a soft card of its own, nothing like a tab row (an empty tab is one). */
+.new-tab {
+  flex: none;
+  display: grid;
+  place-items: center;
+  height: var(--row-height);
+  margin-bottom: var(--row-gap);
+  border: 0;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--row-active) 55%, transparent);
+  color: var(--fg);
+  cursor: default;
+  transition: background 120ms, transform 120ms;
+}
+.new-tab:hover { background: var(--row-active); }
+.new-tab:active { transform: scale(0.98); }
+.new-tab svg { width: 16px; height: 16px; }
 
 /* ---------- Rows ---------- */
 
 .tab-list { list-style: none; margin: 0; padding: 0; min-height: 4px; }
 .tab-list.grow { flex: 1 0 auto; min-height: 40px; }
 
-#pinned:empty::after {
-  content: "Drag tabs here to pin them to this space";
+#pinned:not(:has(.tab))::after {
+  content: "Drag tabs here to pin them to the bookmarks toolbar";
   display: block;
   padding: 4px 8px;
   color: var(--muted);
@@ -402,12 +377,9 @@ body:hover .link-btn {
 .tab:hover { background: var(--row-hover); }
 .tab.active { background: var(--row-active); box-shadow: var(--shadow); }
 .tab.active:hover { background: var(--row-active); }
-.tab.discarded .title { color: var(--muted); }
 .tab.dragging { opacity: 0.4; }
 
-/* Pinned items: closed ones look quieter, and only open ones can be closed. */
-.tab.item:not(.open) .favicon { opacity: 0.6; }
-.tab.item:not(.open) .title { color: var(--muted); }
+/* Pinned items: only open ones can be closed. */
 .tab.item:not(.open) .close { display: none; }
 
 /* A pinned tab that navigated away from its pinned page: "<icon> / <name>".
@@ -457,7 +429,6 @@ body:hover .link-btn {
 .tab .close { visibility: hidden; width: 26px; height: 26px; border-radius: 7px; }
 .tab .close svg { width: 13px; height: 13px; }
 .tab:hover .close { visibility: visible; }
-/* Arc puts the speaker right after the favicon, as a small chip. */
 .tab .audio {
   flex: none;
   width: 22px;
@@ -470,103 +441,6 @@ body:hover .link-btn {
 .tab .audio svg { width: 14px; height: 14px; }
 .tab .audio:hover { background: var(--tile-hover); }
 .tab .audio[hidden] { display: none; }
-
-/* Badges other extensions put on tabs (e.g. Tab Driver's "AI" on agent-controlled tabs). */
-.tab .badges { display: flex; flex: none; gap: 4px; }
-.tab .badges:empty { display: none; }
-.tab .badge {
-  padding: 1px 5px;
-  border-radius: 5px;
-  font-size: 9px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  white-space: nowrap;
-  color: var(--badge, var(--space));
-  background: color-mix(in srgb, var(--badge, var(--space)) 16%, transparent);
-}
-/* Icon badges (Lucide), e.g. Tab Driver's robot next to the sound icon: they look like the
-   sound button. Pulsing icons get a blinking green dot instead of blinking themselves. */
-.tab .badge.icon {
-  position: relative;
-  display: grid;
-  place-items: center;
-  width: 22px;
-  height: 22px;
-  padding: 0;
-  border-radius: 6px;
-  color: var(--badge, var(--fg));
-  background: var(--tile);
-}
-.tab .badge.icon svg { width: 14px; height: 14px; }
-.tab .audio:not([hidden]) + .badges.start { margin-inline-start: -8px; } /* sit next to the sound icon */
-.tab .badge.pulse:not(.icon) { animation: badge-pulse 1.4s ease-in-out infinite; }
-.tab .badge.icon.pulse::after {
-  content: "";
-  position: absolute;
-  top: 2px;
-  right: 2px;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: #34c759;
-  box-shadow: 0 0 0 1.5px var(--base);
-  animation: badge-pulse 1.2s ease-in-out infinite;
-}
-@keyframes badge-pulse { 50% { opacity: 0.3; } }
-@media (prefers-reduced-motion: reduce) { .tab .badge.pulse, .tab .badge.icon.pulse::after { animation: none; } }
-
-/* ---------- Footer: spaces ---------- */
-
-.spaces {
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  height: 44px;
-  margin: 0 -8px;
-  padding: 0 8px;
-  border-top: 1px solid var(--divider);
-}
-
-.spaces > .icon-btn { width: 30px; height: 30px; border-radius: 8px; }
-
-.space-list {
-  flex: 1;
-  display: flex;
-  /* "safe": center when it fits, start at the left when it overflows (scrollable). */
-  justify-content: safe center;
-  gap: 0;
-  min-width: 0;
-  overflow-x: auto;
-  scrollbar-width: none;
-}
-
-.space-btn {
-  flex: none;
-  width: 30px; height: 30px;
-  border: 0;
-  border-radius: 8px;
-  background: none;
-  display: grid;
-  place-items: center;
-  padding: 0;
-  cursor: default;
-  transition: background 120ms, transform 120ms;
-}
-.space-btn:hover { background: var(--btn-hover); }
-.space-btn.active { background: none; }
-.space-btn.drag-over { background: color-mix(in srgb, var(--c) 30%, transparent); transform: scale(1.1); }
-.space-btn .space-emoji { font-size: 14px; line-height: 1; opacity: 0.5; filter: grayscale(1); transition: filter 120ms, opacity 120ms; }
-.space-btn.active .space-emoji { opacity: 1; filter: none; }
-.space-btn:hover .space-emoji { opacity: 0.85; }
-.space-dot {
-  width: 8px; height: 8px;
-  border-radius: 50%;
-  background: var(--c);
-  opacity: 0.5;
-  transition: width 120ms, height 120ms;
-}
-.space-btn.active .space-dot { width: 10px; height: 10px; opacity: 1; }
 
 /* ---------- Context menu ---------- */
 
@@ -595,7 +469,7 @@ body:hover .link-btn {
   text-align: left;
 }
 .menu button:disabled { opacity: 0.4; }
-.menu button:not(:disabled):hover, .menu button:focus-visible { background: var(--space); color: #fff; outline: none; }
+.menu button:not(:disabled):hover, .menu button:focus-visible { background: var(--space); color: var(--on-space); outline: none; }
 .menu button.danger:not(:disabled):hover { background: #e5484d; }
 .menu hr { border: 0; height: 1px; margin: 4px 6px; background: var(--divider); }
 .menu button.has-sub { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
@@ -632,7 +506,6 @@ body:hover .link-btn {
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.3);
 }
 .dialog-card h2 { margin: 0; font-size: 14px; }
-.dialog-card .hint { margin: 0; font-size: 11px; color: var(--muted); }
 .dialog-card .row { display: flex; gap: 8px; }
 
 .dialog-card input[type="text"], .dialog-card input:not([type]), .dialog-card select {
@@ -646,26 +519,9 @@ body:hover .link-btn {
   min-width: 0;
 }
 .dialog-card input:focus, .dialog-card select:focus { outline: 2px solid var(--space); outline-offset: -1px; }
-.dialog-card input[name="name"] { flex: 1; width: 0; }
 .dialog-card select { width: 100%; }
-.emoji-input { width: 44px; text-align: center; padding: 0 !important; }
 
 .field { display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: var(--muted); }
-
-.swatches { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px; }
-.swatch { position: relative; }
-.swatch input { position: absolute; opacity: 0; pointer-events: none; }
-.swatch span {
-  display: block;
-  width: 24px; height: 24px;
-  border-radius: 50%;
-  background: var(--c);
-  box-shadow: inset 0 0 0 2px rgba(0, 0, 0, 0.08);
-  transition: transform 100ms;
-}
-.swatch:hover span { transform: scale(1.1); }
-.swatch input:checked + span { box-shadow: 0 0 0 2px var(--menu-bg), 0 0 0 4px var(--c); }
-.swatch input:focus-visible + span { outline: 2px solid var(--fg); outline-offset: 4px; }
 
 .actions { display: flex; justify-content: flex-end; gap: 8px; }
 .actions button {
@@ -675,7 +531,7 @@ body:hover .link-btn {
   border-radius: 8px;
   background: none;
 }
-.actions button.primary { border: 0; background: var(--space); color: #fff; font-weight: 600; }
+.actions button.primary { border: 0; background: var(--space); color: var(--on-space); font-weight: 600; }
 .actions button.primary.danger { background: #e5484d; }
 .actions button.reset { margin-inline-end: auto; }
 
@@ -699,31 +555,6 @@ body:hover .link-btn {
 .sizing-card input[type="range"] { width: 100%; accent-color: var(--fg); }
 .range-value { color: var(--fg); font-variant-numeric: tabular-nums; }
 
-/* ---------- Split view (Firefox native) ---------- */
-
-.tab.split {
-  gap: 3px;
-  padding: 3px;
-}
-.tab.split .half {
-  position: relative;
-  flex: 1 1 0;
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  height: 30px;
-  padding: 0 2px 0 8px;
-  border-radius: 8px;
-}
-.tab.split .half:hover { background: var(--row-hover); }
-.tab.split .half.active { background: var(--row-active); box-shadow: var(--shadow); }
-.tab.split .half.active .title { font-weight: 600; }
-.tab.split .half .close { visibility: hidden; width: 22px; height: 22px; }
-.tab.split .half:hover .close { visibility: visible; }
-.tab.split.active { background: color-mix(in srgb, var(--row-active) 45%, transparent); }
-.half.dragging { opacity: 0.4; }
-
 /* ---------- Folders (pinned section) ---------- */
 
 .tab.folder .title { font-weight: 600; }
@@ -731,22 +562,6 @@ body:hover .link-btn {
 .tab.folder .folder-icon,
 .tab.folder .folder-icon svg { width: var(--folder-icon); height: var(--folder-icon); }
 .tab.folder .title { flex: 1; min-width: 0; }
-.tab.folder .folder-count {
-  flex: none;
-  min-width: 20px;
-  height: 20px;
-  padding: 0 6px;
-  margin-inline-end: 4px;
-  border-radius: 10px;
-  background: var(--row-hover);
-  color: var(--muted);
-  font-size: 11px;
-  font-weight: 600;
-  line-height: 20px;
-  text-align: center;
-  font-variant-numeric: tabular-nums;
-}
-.tab.folder .folder-count[hidden] { display: none; }
 .tab.folder .folder-emoji { font-size: calc(var(--folder-icon) - 3px); line-height: var(--folder-icon); }
 
 /* "Change Icon" dialog: a grid of emoji to pick from. */
@@ -792,24 +607,130 @@ body:hover .link-btn {
   box-shadow: inset 0 0 0 2px var(--fg);
 }
 
-/* Blank tabs (Cmd+T): same look as the "+ New Tab" row. */
-.tab.blank .favicon { color: var(--muted); }
-.tab.blank .plus { width: 16px; text-align: center; font-size: 17px; line-height: 1; }
-.tab.blank .title { color: var(--muted); }
-.tab.blank.active .title, .tab.blank.active .favicon { color: var(--fg); }
-#today.only-blank .tab.blank .close { display: none; }
-
-/* ---------- Private window: tabs only ---------- */
-
-body.private #favorites,
-body.private #pinned,
-body.private #spaces,
-body.private .space-head .chevron,
-body.private .space-head .space-more { display: none; }
-body.private .space-head { cursor: default; }
-body.private .space-head:hover { background: none; }
-body.private .scroll { padding-bottom: 12px; }
 
 /* Until the first render lands, the sidebar has no tabs, no space and no
    favorites: show nothing rather than an empty "+ New Tab" and a blank header. */
-body.booting .scroll, body.booting .spaces { visibility: hidden; }
+body.booting .scroll { visibility: hidden; }
+
+/* ---------- BookmArc ---------- */
+
+.tab-list.drag-over:empty, #today.drag-over { outline: 2px dashed var(--divider); outline-offset: 2px; border-radius: 10px; }
+.tab .folder-icon { flex: none; display: grid; place-items: center; }
+
+/* Emoji picker: quick choices, or search results over all emoji. */
+.emoji-picker { display: flex; flex-direction: column; gap: 8px; }
+.emoji-picker .emoji-grid { max-height: 220px; overflow-y: auto; scrollbar-width: thin; }
+.emoji-search {
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--divider);
+  border-radius: 8px;
+  background: var(--field);
+  color: var(--fg);
+  font: inherit;
+}
+.emoji-search:focus { outline: 2px solid var(--space); outline-offset: -1px; }
+.picker-empty { grid-column: 1 / -1; padding: 12px 0; color: var(--muted); font-size: 12px; text-align: center; }
+
+
+/* Badges other extensions put on tabs (e.g. Tab Driver's "AI" on agent-controlled tabs). */
+.tab .badges { display: flex; flex: none; gap: 4px; }
+.tab .badges:empty { display: none; }
+.tab .badge {
+  padding: 1px 5px;
+  border-radius: 5px;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  color: var(--badge, var(--space));
+  background: color-mix(in srgb, var(--badge, var(--space)) 16%, transparent);
+}
+/* Icon badges (Lucide), e.g. Tab Driver's robot next to the sound icon: they look like the
+   sound button. Pulsing icons get a blinking green dot instead of blinking themselves. */
+.tab .badge.icon {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border-radius: 6px;
+  color: var(--badge, var(--fg));
+  background: var(--tile);
+}
+.tab .badge.icon svg { width: 14px; height: 14px; }
+.tab .audio:not([hidden]) + .badges.start { margin-inline-start: -8px; } /* sit next to the sound icon */
+.tab .badge.pulse:not(.icon) { animation: badge-pulse 1.4s ease-in-out infinite; }
+.tab .badge.icon.pulse::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #34c759;
+  box-shadow: 0 0 0 1.5px var(--base);
+  animation: badge-pulse 1.2s ease-in-out infinite;
+}
+@keyframes badge-pulse { 50% { opacity: 0.3; } }
+@media (prefers-reduced-motion: reduce) { .tab .badge.pulse, .tab .badge.icon.pulse::after { animation: none; } }
+
+/* ---------- Folder menu button and colors ---------- */
+
+.tab.folder .folder-more { visibility: hidden; width: 26px; height: 26px; border-radius: 7px; margin-inline-start: auto; }
+.tab.folder:hover .folder-more, .tab.folder .folder-more:focus-visible { visibility: visible; }
+
+/* Colored folders: areas in one layer under the rows (laid out in sidebar.js). */
+#pinned { position: relative; }
+#pinned > .areas { position: absolute; inset: 0; pointer-events: none; list-style: none; }
+.area {
+  position: absolute;
+  right: 0;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--c) var(--area-mix, 80%), transparent);
+}
+/* On a dark panel a pastel would swallow light text: only a hint of it. */
+:root[data-text="light"] .area { --area-mix: 22%; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-text]) .area { --area-mix: 22%; }
+}
+
+.color-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+.color-swatch {
+  height: 34px;
+  border: 0;
+  border-radius: 9px;
+  background: var(--c);
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.08);
+  cursor: pointer;
+}
+.color-swatch:hover { transform: scale(1.04); }
+.color-swatch.selected { box-shadow: 0 0 0 2px var(--menu-bg), 0 0 0 4px var(--fg); }
+.dialog-card input[type="color"] { width: 100%; height: 32px; padding: 2px; border: 1px solid var(--divider); border-radius: 8px; background: var(--field); }
+
+/* ---------- Split view (Firefox native) ---------- */
+
+.tab.split {
+  gap: 3px;
+  padding: 3px;
+}
+.tab.split .half {
+  position: relative;
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 30px;
+  padding: 0 2px 0 8px;
+  border-radius: 8px;
+}
+.tab.split .half:hover { background: var(--row-hover); }
+.tab.split .half.active { background: var(--row-active); box-shadow: var(--shadow); }
+.tab.split .half.active .title { font-weight: 600; }
+.tab.split .half .close { visibility: hidden; width: 22px; height: 22px; }
+.tab.split .half:hover .close { visibility: visible; }
+.tab.split.active { background: color-mix(in srgb, var(--row-active) 45%, transparent); }
+.half.dragging { opacity: 0.4; }

@@ -7,7 +7,6 @@ export default {
     "extras/setup",
     "docs",
     "updates.json",
-    "videos",
     "sign.sh",
     "package.json",
     "package-lock.json",

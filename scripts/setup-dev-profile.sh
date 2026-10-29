@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
-# Create the "arc-dev" Firefox Developer Edition profile used for development:
-#   - Arc loads unsigned, straight from this repo (extensions/arc@sidebar-pliha
+# Create the "bookmarc-dev" Firefox Developer Edition profile used for development:
+#   - BookmArc loads unsigned, straight from this repo (extensions/bookmarc@pliha
 #     is a proxy file containing the repo path)
 #   - chrome/userChrome.css is a symlink to extras/userChrome.css
+#   - customKeys.json clears Firefox's Cmd/Ctrl+T, Cmd/Ctrl+W and Cmd/Ctrl+L
+#     (extras/setup-keys.sh.txt, shared with the setup script)
 #   - user.js = extras/user.js + dev prefs (unsigned add-ons, local remote
-#     debugging so `npm run reload` can reload Arc in place)
+#     debugging so `npm run reload` can reload BookmArc in place)
 # Then: `npm run dev` to start it, `npm run reload` after code changes.
 # macOS & Linux. Needs Firefox Developer Edition (or Nightly).
 set -euo pipefail
@@ -23,21 +25,26 @@ case "$(uname -s)" in
 esac
 [ -x "$FF" ] || { echo "Firefox Developer Edition not found (looked for: ${FF:-firefox-developer-edition})." >&2; exit 1; }
 
-PROFILE="$ROOT/arc-dev"
+PROFILE="$ROOT/bookmarc-dev"
 if [ ! -f "$PROFILE/times.json" ]; then
-  "$FF" -CreateProfile "arc-dev $PROFILE" >/dev/null 2>&1 || true
+  "$FF" -CreateProfile "bookmarc-dev $PROFILE" >/dev/null 2>&1 || true
 fi
 mkdir -p "$PROFILE/chrome" "$PROFILE/extensions"
 
-printf '%s\n' "$REPO" > "$PROFILE/extensions/arc@sidebar-pliha"
+printf '%s\n' "$REPO" > "$PROFILE/extensions/bookmarc@pliha"
 ln -sf "$REPO/extras/userChrome.css" "$PROFILE/chrome/userChrome.css"
+
+# Free Cmd/Ctrl+T, Cmd/Ctrl+W and Cmd/Ctrl+L for BookmArc, as the setup script does.
+UNINSTALL=0
+# shellcheck source=../extras/setup-keys.sh.txt
+. "$REPO/extras/setup-keys.sh.txt"
 
 {
   cat "$REPO/extras/user.js"
   cat <<'EOF'
 
-// ---- Arc development profile ----
-// Load Arc unsigned, straight from the repo (extensions/arc@sidebar-pliha).
+// ---- BookmArc development profile ----
+// Load BookmArc unsigned, straight from the repo (extensions/bookmarc@pliha).
 user_pref("xpinstall.signatures.required", false);
 user_pref("extensions.autoDisableScopes", 0);
 // Local-only remote debugging, used by `npm run reload`.

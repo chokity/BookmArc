@@ -1,0 +1,20 @@
+{
+  "categories": {
+    "firefox": [
+      "tabs",
+      "bookmarks"
+    ]
+  },
+  "summary": {
+    "en-US": "Your Firefox bookmarks as an Arc-style sidebar: the bookmarks toolbar as pinned tabs with folders and colors, favorites, your open tabs and a command bar."
+  },
+  "description": {
+    "en-US": "BookmArc is one sidebar, nothing more: your bookmarks toolbar as pinned tabs, with folders, favorites and your open tabs below. A bookmark opens in its own tab, and clicking it again goes back to that same tab instead of opening another one. No spaces, no extra accounts: one list, the bookmarks you already have.\n\n**Pinned tabs are your bookmarks toolbar**\n\n- Pinning, renaming, moving and unpinning in the sidebar change the bookmarks, and changes made in Firefox show up in the sidebar at once.\n- Folders, nested as deep as you like, each with an emoji and a background color.\n- A collapsed folder keeps its open tabs in view.\n- Open tabs are matched to their bookmarks by address.\n\n**Everything else in the sidebar**\n\n- **Favorites** at the top: drag a tab there.\n- **Search** through bookmarks and tabs: start typing anywhere in the sidebar.\n- **Open tabs** below the bookmarks; split views show as one row.\n- **Status bar** with the number of open tabs and **Close All**.\n- Multi-select with Shift- and Cmd/Ctrl-click, menus for tabs, bookmarks and folders.\n- A theme color of your own, light or dark text, and adjustable sizes.\n- Tabs idle for 45 minutes are unloaded to save memory.\n\n**Command bar**\n\n- `Cmd/Ctrl+T` opens it in a new tab: search, enter an address or switch to an open tab. `Tab` on a site searches inside that site.\n- `Cmd/Ctrl+L` opens it with the current tab's address selected; what you pick loads in that tab.\n\n**The full Arc-style layout (optional)**\n\nExtensions can't hide Firefox's tab strip. A small setup script adds a `userChrome.css` to your Firefox profile that hides it, shows the page as a card with a rounded corner next to the sidebar, and frees `Cmd/Ctrl+T`, `Cmd/Ctrl+W` and `Cmd/Ctrl+L` for the add-on. The add-on works without it, too. Setup, step by step: [github.com/chokity/BookmArc](https://github.com/chokity/BookmArc#install)\n\n**Limits**\n\nFirefox doesn't let extensions draw over a page, so the command bar is a tab of its own. `about:` pages open from Firefox's own address bar.\n\nYour bookmarks stay Firefox bookmarks (synced by Firefox Sync if you use it). Favorites, theme and folder colors are stored locally. BookmArc collects no data.\n\nNot affiliated with or endorsed by The Browser Company. “Arc” is their browser; BookmArc is an independent extension that brings its sidebar ideas to Firefox."
+  },
+  "homepage": {
+    "en-US": "https://github.com/chokity/BookmArc"
+  },
+  "version": {
+    "license": "MIT"
+  }
+}
