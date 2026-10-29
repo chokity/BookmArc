@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "BookmArc",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "Your Firefox bookmarks as an Arc-style sidebar: the bookmarks toolbar as pinned tabs with folders and colors, favorites, your open tabs and a command bar.",
   "browser_specific_settings": {
     "gecko": {
