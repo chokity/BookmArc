@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.7.0
+## 0.7.1
 
 Renamed to **BookmArc** (formerly Arcsidebar Fork), with a new icon. The
 rename goes all the way: a new add-on ID (`bookmarc@pliha`, was
