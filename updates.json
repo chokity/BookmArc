@@ -6,6 +6,11 @@
           "version": "0.7.6",
           "update_link": "https://github.com/chokity/BookmArc/releases/download/v0.7.6/bookmarc-0.7.6.xpi",
           "update_hash": "sha256:131181965e9e2bbbbe6e67ec074589c36d98759211bf556fcb22458ae795a6f1"
+        },
+        {
+          "version": "0.7.7",
+          "update_link": "https://github.com/chokity/BookmArc/releases/download/v0.7.7/bookmarc-0.7.7.xpi",
+          "update_hash": "sha256:b4d3f42efe9e446d1dcb485c618a997836a672a6b9a5a63d65fe38027768d8bd"
         }
       ]
     }
