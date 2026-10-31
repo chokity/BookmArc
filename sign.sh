@@ -36,6 +36,19 @@ fs.writeFileSync("manifest.json", JSON.stringify(m, null, 2) + "\n");
 console.log("version -> " + m.version);
 ' "$KIND"
 if [ "$CHANNEL" = listed ]; then
+  # Listed versions update through AMO, which refuses a manifest with
+  # update_url (that's for the GitHub releases): sign without it, then put
+  # manifest.json back as it was, version bump included.
+  BACKUP="$(mktemp)"
+  cp manifest.json "$BACKUP"
+  trap 'cp "$BACKUP" manifest.json; rm -f "$BACKUP"' EXIT
+  trap 'exit 1' INT TERM
+  node -e '
+const fs = require("fs");
+const m = JSON.parse(fs.readFileSync("manifest.json", "utf8"));
+delete m.browser_specific_settings?.gecko?.update_url;
+fs.writeFileSync("manifest.json", JSON.stringify(m, null, 2) + "\n");
+'
   npx web-ext sign --channel=listed --amo-metadata=docs/amo-metadata.json
 else
   npx web-ext sign --channel=unlisted

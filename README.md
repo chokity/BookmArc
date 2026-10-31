@@ -176,7 +176,7 @@ Release Firefox only runs signed add-ons. To sign your own build without publish
 Other scripts:
 
 - `npm run build:setup` regenerates `extras/setup/` from `extras/userChrome.css` and `extras/user.js`. Run it after changing either.
-- `npm run sign:listed` signs a *listed* build instead: it goes to addons.mozilla.org for review and is published there, with the page text from [`docs/amo-metadata.json`](docs/amo-metadata.json) (the same text for the Developer Hub is in [`docs/amo-listing.md`](docs/amo-listing.md)). Firefox then keeps installed copies up to date itself. `./sign.sh minor --listed` bumps the minor version instead.
+- `npm run sign:listed` signs a *listed* build instead: it goes to addons.mozilla.org for review and is published there, with the page text from [`docs/amo-metadata.json`](docs/amo-metadata.json) (the same text for the Developer Hub is in [`docs/amo-listing.md`](docs/amo-listing.md)). Firefox then keeps installed copies up to date itself. AMO refuses `update_url` in a listed build, so `sign.sh` leaves it out for the upload and puts `manifest.json` back afterwards. `./sign.sh minor --listed` bumps the minor version instead.
 - `npm run build` packs an unsigned `.zip` (for Developer Edition / Nightly, or `about:debugging` → *Load Temporary Add-on*).
 
 | Path | What |
