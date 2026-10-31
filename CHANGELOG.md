@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.7
+
+- **Updates come by themselves**: Firefox now checks this add-on's GitHub
+  releases once a day and installs new versions, keeping your favorites and
+  settings (*Check for Updates* in `about:addons` → ⚙ checks right away).
+  Coming from 0.7.6, install this version by hand once.
+
 ## 0.7.6
 
 First release of **BookmArc**, an Arc-style sidebar for Firefox.

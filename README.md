@@ -24,7 +24,7 @@ Needs **Firefox 155 or newer** (desktop).
 
 ### 1. The add-on
 
-Download the latest `.xpi` from [Releases](https://github.com/chokity/BookmArc/releases) and drag it into a Firefox window (or `about:addons` → ⚙ → *Install Add-on From File…*). New versions are installed the same way; your favorites and settings are kept.
+Download the latest `.xpi` from [Releases](https://github.com/chokity/BookmArc/releases) and drag it into a Firefox window (or `about:addons` → ⚙ → *Install Add-on From File…*). From then on it updates itself: Firefox checks for new versions once a day (`about:addons` → ⚙ → *Check for Updates* checks right away), and your favorites and settings are kept. Coming from 0.7.6 or earlier, install the latest version by hand once.
 
 Recommended: install [Firefox Multi-Account Containers](https://addons.mozilla.org/firefox/addon/multi-account-containers/) as well, to create and sort spaces and assign sites to them (see [Features](#features)).
 
