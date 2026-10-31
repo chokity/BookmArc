@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "BookmArc",
-  "version": "0.7.2",
+  "version": "0.7.6",
   "description": "Your Firefox bookmarks as an Arc-style sidebar: the bookmarks toolbar as pinned tabs with folders and colors, favorites, your open tabs and a command bar.",
   "browser_specific_settings": {
     "gecko": {
@@ -23,6 +23,7 @@
   },
   "permissions": [
     "tabs",
+    "theme",
     "alarms",
     "storage",
     "sessions",
@@ -31,7 +32,15 @@
     "history",
     "search",
     "topSites",
-    "bookmarks"
+    "bookmarks",
+    "contextualIdentities",
+    "cookies",
+    "tabHide",
+    "webRequest",
+    "webRequestBlocking"
+  ],
+  "host_permissions": [
+    "<all_urls>"
   ],
   "background": {
     "scripts": [
@@ -88,6 +97,36 @@
         "default": "Alt+Shift+D"
       },
       "description": "Add current tab to Favorites"
+    },
+    "space-1": {
+      "suggested_key": {
+        "default": "Alt+1"
+      },
+      "description": "Switch to space 1"
+    },
+    "space-2": {
+      "suggested_key": {
+        "default": "Alt+2"
+      },
+      "description": "Switch to space 2"
+    },
+    "space-3": {
+      "suggested_key": {
+        "default": "Alt+3"
+      },
+      "description": "Switch to space 3"
+    },
+    "reopen-tab": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+T"
+      },
+      "description": "Reopen the tab closed last in this space"
+    },
+    "space-4": {
+      "suggested_key": {
+        "default": "Alt+4"
+      },
+      "description": "Switch to space 4"
     }
   },
   "chrome_url_overrides": {

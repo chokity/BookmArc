@@ -4,7 +4,7 @@
 
 import { h, setIcon, syncChildren, showMenu, openDialog, pickIcon, inlineRename } from "./ui.js";
 import * as store from "../shared/store.js";
-import { paintTheme, themeText } from "../shared/theme.js";
+import { paintTheme, themeText, firefoxTheme } from "../shared/theme.js";
 import { pretty } from "../shared/suggest.js";
 import { getBadges, tabMenuFor } from "../shared/badges.js";
 
@@ -19,7 +19,10 @@ const els = {
   today: document.getElementById("today"),
   clear: document.getElementById("clear"),
   tabCount: document.getElementById("tab-count"),
+  spaces: document.getElementById("spaces"),
+  spaceTitle: document.querySelector("#space-head .space-title"),
   closeAll: document.getElementById("close-all"),
+  player: document.getElementById("player"),
   newTab: document.getElementById("new-tab"),
   search: document.getElementById("search"),
   searchClear: document.getElementById("search-clear"),
@@ -27,8 +30,17 @@ const els = {
 
 const S = {
   windowId: null,
-  tabs: [],
-  favorites: [],
+  incognito: false,
+  closed: [], // tabs closed in this space, newest first (store.closedTabsOf)
+  tabs: [], // the window's tabs in its space (all of them without spaces)
+  allTabs: [], // every tab of the window
+  spaces: null, // the containers, or null: no spaces (containers off, a private window)
+  space: null, // the window's space (one of `spaces`)
+  tabSpaces: {}, // tabId -> space, of tabs without a container
+  pinRoot: null, // the bookmarks folder the pinned tabs are (the toolbar, or the space's pick)
+  rootTitle: "", // its name
+  favorites: [], // the space's favorites (all of them without spaces)
+  allFavorites: [],
   pins: [], // the bookmarks bar
   bindings: {}, // tabId -> itemId
   theme: {},
@@ -48,7 +60,7 @@ browser.runtime.onMessage.addListener((msg) => {
   refresh();
 });
 
-let themeDraft = null; // {tint, intensity} previewed by the theme dialog
+let themeDraft = null; // {tint} previewed by the theme dialog
 let renaming = false; // a title is being edited in place: hold re-renders until it's done
 let pendingRename = null; // a folder just created: rename it once its row is drawn
 let query = []; // the search field's words, lowercased; empty: no search
@@ -148,7 +160,14 @@ function placeBlock(pins, block, targetId, where) {
   return rest;
 }
 
-const savePins = (pins) => store.savePins(pins);
+const savePins = (pins) => store.savePins(pins, S.pinRoot);
+
+/** Save the space's favorites as `list` (in its space); the other spaces' stay as they are. */
+function saveFavorites(list) {
+  const ids = new Set([...S.favorites, ...list].map((f) => f.id));
+  const others = S.allFavorites.filter((f) => !ids.has(f.id));
+  return store.saveFavorites([...others, ...(S.space ? list.map((f) => ({ ...f, space: S.space.id })) : list)]);
+}
 const updatePin = (id, change) => savePins(S.pins.map((p) => (p.id === id ? { ...p, ...change } : p)));
 
 // ---------- Rendering ----------
@@ -518,11 +537,29 @@ async function setFolderColor(folder) {
 
 const tiles = new Map(); // favorite id -> <button>
 
+/**
+ * The unread count a page puts in its title: "(3) Inbox", "[3] Chat",
+ * "Inbox (3) - Gmail"; "" for none. In the middle only after a name without
+ * digits and up to three of them, so "iPhone 15 (2023) - Wikipedia" isn't one.
+ */
+function unreadCount(title = "") {
+  const m = title.match(/^\s*[([](\d+\+?)[)\]]\s|^[^\d()[\]]{1,40}\((\d{1,3}\+?)\)\s+[-–—|·]/);
+  const n = m?.[1] || m?.[2] || "";
+  if (!n || parseInt(n, 10) === 0) return "";
+  return parseInt(n, 10) > 99 ? "99+" : n;
+}
+
 function renderFavorites() {
   const nodes = S.favorites.map((fav) => {
     let el = tiles.get(fav.id);
-    if (!el) tiles.set(fav.id, (el = h("button", { className: "tile", draggable: true, dataset: { item: fav.id } }, h("span", { className: "icon" }))));
+    if (!el) {
+      el = h("button", { className: "tile", draggable: true, dataset: { item: fav.id } }, h("span", { className: "icon" }), h("span", { className: "unread", hidden: true }));
+      tiles.set(fav.id, el);
+    }
     const tab = boundTab(fav.id);
+    const unread = unreadCount(tab?.title);
+    el.lastChild.hidden = !unread;
+    if (el.lastChild.textContent !== unread) el.lastChild.textContent = unread;
     el.classList.toggle("open", !!tab);
     el.classList.toggle("active", !!tab?.active);
     el.title = tab?.title || fav.title;
@@ -539,7 +576,10 @@ function renderFavorites() {
 function render() {
   if (renaming) return; // refresh() runs again when the rename ends
   // While the theme dialog is open it paints its own preview.
-  if (!themeDraft) paintTheme(S.theme);
+  if (!themeDraft) {
+    paintTheme(S.theme);
+    paintFirefox();
+  }
   const pinned = pinnedRows();
   syncChildren(els.pinned, [areaLayer, ...pinned]);
   layoutAreas();
@@ -554,6 +594,8 @@ function render() {
   applySelection();
   renderFavorites();
   renderStatus();
+  renderSpaces();
+  renderPlayer();
   document.body.classList.toggle("pins-collapsed", pinsCollapsed);
   document.body.classList.remove("booting");
   if (pendingRename && rows.has("i" + pendingRename)) {
@@ -561,6 +603,31 @@ function render() {
     pendingRename = null;
     startRename(id);
   }
+}
+
+const spaceButtons = new Map(); // space id -> <button>
+
+/** The status bar's space icons (none without spaces), and the space's name over the pinned list. */
+function renderSpaces() {
+  els.spaceTitle.textContent = S.space?.name || (S.pinRoot === "toolbar_____" ? "Bookmarks" : S.rootTitle);
+  els.spaceHead.title = `${S.rootTitle} · click to show or hide`;
+  els.closeAll.title = S.space ? `Close all tabs in ${S.space.name}` : "Close all tabs in this window";
+  els.spaces.hidden = !S.space;
+  if (!S.space) return;
+  const nodes = S.spaces.map((space) => {
+    let el = spaceButtons.get(space.id);
+    if (!el) spaceButtons.set(space.id, (el = h("button", { type: "button", className: "space-btn", dataset: { space: space.id } }, h("span", { className: "space-icon" }))));
+    const active = space.id === S.space.id;
+    el.classList.toggle("active", active);
+    el.setAttribute("aria-pressed", String(active));
+    el.title = space.name;
+    el.setAttribute("aria-label", space.name);
+    el.firstChild.style.setProperty("--space-icon", `url("${space.iconUrl}")`);
+    el.firstChild.style.setProperty("--space-color", space.colorCode);
+    return el;
+  });
+  for (const id of spaceButtons.keys()) if (!S.spaces.some((s) => s.id === id)) spaceButtons.delete(id);
+  syncChildren(els.spaces, nodes);
 }
 
 /** The window's open tabs, as the status bar counts them: empty ones don't count, as in the list. */
@@ -574,25 +641,148 @@ function renderStatus() {
   if (!closeAllArmed) els.closeAll.disabled = !open.length;
 }
 
+// ---------- Mini player ----------
+
+const PLAYER_MAX = 3;
+let miniPlayer = true; // tabs playing sound show over the status bar
+const playerRows = new Map(); // tab id -> row
+
+/**
+ * Tabs of this window playing sound (muted ones too), in any space, other than
+ * the one in front: a row each, to mute, close or go to them.
+ */
+function renderPlayer() {
+  const playing = miniPlayer ? S.allTabs.filter((t) => t.audible && !t.active).slice(0, PLAYER_MAX) : [];
+  for (const id of playerRows.keys()) if (!playing.some((t) => t.id === id)) playerRows.delete(id);
+  syncChildren(els.player, playing.map(playerRow));
+  els.player.hidden = !playing.length;
+}
+
+function playerRow(tab) {
+  let row = playerRows.get(tab.id);
+  if (!row) {
+    row = h(
+      "div",
+      { className: "player-row", dataset: { tab: tab.id } },
+      h("span", { className: "favicon" }),
+      h("span", { className: "player-text" }, h("span", { className: "player-title" }), h("span", { className: "player-sub" })),
+      h("button", { type: "button", className: "icon-btn player-mute" }),
+      h("button", { type: "button", className: "icon-btn close", title: "Close tab" }, svg("close"))
+    );
+    playerRows.set(tab.id, row);
+  }
+  const [favicon, text, mute] = row.children;
+  setIcon(favicon, iconFor(tab), tab.url);
+  const title = tab.title || pretty(tab.url);
+  text.firstChild.textContent = title;
+  // Where it plays: the site, and the space when it's another one.
+  const space = S.space && S.spaces?.find((s) => s.id === spaceOfTab(tab));
+  text.lastChild.textContent = [pretty(tab.url), space && space !== S.space && space.name].filter(Boolean).join(" · ");
+  row.title = `${title}\nClick to go to the tab`;
+  const muted = !!tab.mutedInfo?.muted;
+  if (mute.dataset.state !== String(muted)) {
+    mute.dataset.state = String(muted);
+    mute.replaceChildren(lucide(muted ? LUCIDE.volumeOff : LUCIDE.volume));
+  }
+  mute.title = muted ? "Unmute tab" : "Mute tab";
+  return row;
+}
+
+els.player.addEventListener("click", (e) => {
+  const row = e.target.closest(".player-row");
+  const tab = row && S.allTabs.find((t) => t.id === Number(row.dataset.tab));
+  if (!tab) return;
+  if (e.target.closest(".player-mute")) browser.tabs.update(tab.id, { muted: !tab.mutedInfo?.muted });
+  else if (e.target.closest(".close")) closeTabs([tab.id]);
+  // A tab of another space takes the window there (the background page follows it).
+  else browser.tabs.update(tab.id, { active: true });
+});
+
 // ---------- Loading ----------
 
 let loading = null;
 let again = false;
 
 async function load() {
-  const [tabs, favorites, pins, bindings, theme, badges, icons] = await Promise.all([
+  const [allTabs, allFavorites, bindings, badges, icons, allSpaces, spaceId, tabSpaces] = await Promise.all([
     browser.tabs.query({ windowId: S.windowId }),
     store.getFavorites(),
-    store.getPins(),
     store.getBindings(),
-    store.getTheme(),
     getBadges(),
     store.getIconCache(),
+    S.incognito ? null : store.getSpaces(),
+    store.getWindowSpace(S.windowId),
+    store.getTabSpaces(),
   ]);
+  const spaces = allSpaces?.length ? allSpaces : null;
+  // Until the background page has given the window its space, it shows everything.
+  const space = spaces?.find((s) => s.id === spaceId) || null;
+  const [theme, pinRoot] = await Promise.all([store.getTheme(space), store.getPinRoot(space)]);
+  const [pins, [rootNode]] = await Promise.all([store.getPins(pinRoot), browser.bookmarks.get(pinRoot).catch(() => [])]);
+  const rootTitle = rootNode?.title || "Bookmarks";
+  const closed = await store.closedTabsOf(space?.id || null);
   // A command bar that has arrived somewhere is an ordinary tab again.
-  for (const tab of tabs) if (pendingNav.has(tab.id) && tab.url && !store.isNewTabUrl(tab.url) && tab.url !== "about:blank") pendingNav.delete(tab.id);
-  Object.assign(S, { tabs, favorites, pins, bindings, theme, badges, icons });
+  for (const tab of allTabs) if (pendingNav.has(tab.id) && tab.url && !store.isNewTabUrl(tab.url) && tab.url !== "about:blank") pendingNav.delete(tab.id);
+  const tabs = space ? allTabs.filter((t) => spaceOfTab(t, spaces, space, tabSpaces) === space.id) : allTabs;
+  const favorites = store.favoritesOf(allFavorites, space, spaces);
+  // Another space: the old one's picture slides off while the new one slides in.
+  const from = S.space && space && S.space.id !== space.id ? S.spaces?.findIndex((s) => s.id === S.space.id) : -1;
+  const ghost = from >= 0 ? swipeGhost() : null;
+  Object.assign(S, { tabs, allTabs, favorites, allFavorites, pins, bindings, theme, badges, icons, spaces, space, tabSpaces, pinRoot, rootTitle, closed });
   render();
+  if (ghost) swipe(ghost, spaces.findIndex((s) => s.id === space.id) > from ? 1 : -1);
+}
+
+// ---------- Space switch animation ----------
+
+const SWIPE_MS = 300;
+let swiping = []; // the running switch's animations
+
+/** What the panel shows above the mini player and the status bar. */
+const swipeParts = () => [els.search.closest(".search"), els.favorites, els.spaceHead, els.scroll];
+
+/**
+ * A still copy of the panel above the status bar, in its colors and laid out
+ * as it is, to slide off over the new space; null when motion is turned down.
+ */
+function swipeGhost() {
+  if (matchMedia("(prefers-reduced-motion: reduce)").matches) return null;
+  for (const animation of swiping) animation.finish();
+  const body = getComputedStyle(document.body);
+  const ghost = h("div", { className: "swipe-ghost", "aria-hidden": "true" });
+  Object.assign(ghost.style, {
+    // Down to the mini player (the same in every space) or the status bar.
+    height: `${(els.player.hidden ? document.querySelector(".status-bar") : els.player).getBoundingClientRect().top}px`,
+    padding: body.padding,
+    gap: body.gap,
+    background: body.backgroundColor,
+  });
+  for (const part of swipeParts()) {
+    const copy = part.cloneNode(true);
+    copy.style.height = `${part.offsetHeight}px`;
+    copy.style.flex = "none";
+    for (const el of [copy, ...copy.querySelectorAll("[id]")]) el.removeAttribute("id");
+    ghost.append(copy);
+  }
+  document.body.append(ghost);
+  // What a copy doesn't carry: the scroll position and the search text.
+  ghost.querySelector(".scroll").scrollTop = els.scroll.scrollTop;
+  ghost.querySelector("input").value = els.search.value;
+  return ghost;
+}
+
+/** Slide `ghost` off and the new space in; `dir` 1 when it is to the right of the old one. */
+function swipe(ghost, dir) {
+  const timing = { duration: SWIPE_MS, easing: "cubic-bezier(0.25, 0.8, 0.25, 1)" };
+  const out = ghost.animate([{ transform: "translateX(0)" }, { transform: `translateX(${-dir * 100}%)` }], timing);
+  swiping = [out, ...swipeParts().map((part) => part.animate([{ transform: `translateX(${dir * 100}%)` }, { transform: "translateX(0)" }], timing))];
+  out.finished.catch(() => {}).finally(() => ghost.remove());
+}
+
+/** A tab's space; one whose space is unknown (gone, not given yet) counts as the window's, as in the background page. */
+function spaceOfTab(tab, spaces = S.spaces, space = S.space, tabSpaces = S.tabSpaces) {
+  const id = store.spaceOf(tab, tabSpaces);
+  return spaces.some((s) => s.id === id) ? id : space.id;
 }
 
 /** Reload everything, coalescing bursts of events into one pass. (A timer, not
@@ -616,21 +806,43 @@ function refresh() {
 
 // ---------- Actions ----------
 
-/** Open (or switch to) a favorite or pinned item. */
+/** New tabs open in the space's container (nothing without spaces). */
+const spaceProps = () => (S.space ? { cookieStoreId: S.space.id } : {});
+
+/** The container `url` opens in: the one Multi-Account Containers assigned it to, else the space's. */
+async function containerFor(url) {
+  if (!S.space) return {};
+  return { cookieStoreId: (await store.assignedSpace(url, S.spaces)) || S.space.id };
+}
+
+/**
+ * Open (or switch to) a favorite or pinned item, in this space. A site that
+ * Multi-Account Containers assigned to another container opens in that
+ * space (its tab there, if it has one), and the window follows it.
+ */
 async function openItem(item) {
   const tab = boundTab(item.id);
   if (tab) {
     await browser.tabs.update(tab.id, { active: true });
     return;
   }
-  const created = await browser.tabs.create({ windowId: S.windowId, url: item.url, active: true });
+  const props = await containerFor(item.url);
+  const there =
+    props.cookieStoreId && props.cookieStoreId !== S.space.id
+      ? S.allTabs.find((t) => S.bindings[t.id] === item.id && t.cookieStoreId === props.cookieStoreId)
+      : null;
+  if (there) {
+    await browser.tabs.update(there.id, { active: true });
+    return;
+  }
+  const created = await browser.tabs.create({ windowId: S.windowId, url: item.url, active: true, ...props });
   await store.bind(created.id, item.id);
 }
 
 /** A plain tab on `url`. Firefox reports a new tab as about:blank until it starts loading;
     the background page is told so it doesn't take it for a spare Cmd+T tab. */
 async function openInNewTab(url) {
-  const tab = await browser.tabs.create({ windowId: S.windowId, url, active: true });
+  const tab = await browser.tabs.create({ windowId: S.windowId, url, active: true, ...(await containerFor(url)) });
   browser.runtime.sendMessage({ type: "keep-tab", tabId: tab.id }).catch(() => {});
   return tab;
 }
@@ -640,7 +852,7 @@ const openCommandBar = () => browser.runtime.sendMessage({ type: "command-bar", 
 async function addFavorite(tab) {
   if (!tab?.url || S.favorites.some((f) => f.url === tab.url)) return;
   const fav = { id: store.uid(), url: tab.url, title: tab.title || tab.url };
-  await store.saveFavorites([...S.favorites, fav]);
+  await saveFavorites([...S.favorites, fav]);
   await store.bind(tab.id, fav.id);
 }
 
@@ -661,7 +873,7 @@ async function unpin(itemIds) {
 
 async function removeFavorite(favId) {
   await store.unbindItems([favId]);
-  await store.saveFavorites(S.favorites.filter((f) => f.id !== favId));
+  await saveFavorites(S.favorites.filter((f) => f.id !== favId));
 }
 
 /** A pinned item becomes a favorite (same id: its open tab stays bound). */
@@ -670,13 +882,13 @@ async function pinToFavorite(item, beforeId = null) {
   const list = S.favorites.filter((f) => f.id !== item.id);
   const at = beforeId ? list.findIndex((f) => f.id === beforeId) : -1;
   list.splice(at >= 0 ? at : list.length, 0, fav);
-  await store.saveFavorites(list);
+  await saveFavorites(list);
   await savePins(S.pins.filter((p) => p.id !== item.id));
 }
 
 /** A favorite becomes a pinned item (same id). */
 async function favoriteToPin(fav, targetId = null, where = "end") {
-  await store.saveFavorites(S.favorites.filter((f) => f.id !== fav.id));
+  await saveFavorites(S.favorites.filter((f) => f.id !== fav.id));
   await savePins(placeBlock(S.pins, [{ id: fav.id, url: fav.url, title: fav.title }], targetId, where));
 }
 
@@ -692,7 +904,7 @@ async function saveCurrentUrl(item) {
   if (!tab || !isWebUrl(tab.url)) return;
   const change = { url: tab.url, title: tab.title || tab.url };
   if (S.favorites.some((f) => f.id === item.id)) {
-    await store.saveFavorites(S.favorites.map((f) => (f.id === item.id ? { ...f, ...change } : f)));
+    await saveFavorites(S.favorites.map((f) => (f.id === item.id ? { ...f, ...change } : f)));
   } else {
     await updatePin(item.id, change);
   }
@@ -707,7 +919,7 @@ async function closeTabs(tabIds) {
       const last = rest.reduce((a, b) => ((b.lastAccessed || 0) > (a.lastAccessed || 0) ? b : a));
       await browser.tabs.update(last.id, { active: true });
     } else {
-      await browser.tabs.create({ windowId: S.windowId, active: true });
+      await browser.tabs.create({ windowId: S.windowId, active: true, ...spaceProps() });
     }
   }
   await browser.tabs.remove(tabIds);
@@ -756,7 +968,7 @@ async function openFolderItems(folderId) {
   const items = S.pins.filter((p) => !isFolder(p) && subtree(S.pins, folderId).has(p.id) && p.id !== folderId);
   for (const item of items) {
     if (boundTab(item.id)) continue;
-    const tab = await browser.tabs.create({ windowId: S.windowId, url: item.url, active: false });
+    const tab = await browser.tabs.create({ windowId: S.windowId, url: item.url, active: false, ...(await containerFor(item.url)) });
     await store.bind(tab.id, item.id);
   }
 }
@@ -780,13 +992,58 @@ async function changeFolderIcon(folder) {
   await updatePin(folder.id, { icon });
 }
 
-/** Theme dialog: any color, and how strongly it tints the panel. */
+/** "Bookmarks Folder…": the bookmarks folder this space shows as its pinned tabs. */
+async function chooseBookmarksFolder() {
+  const [tree] = await browser.bookmarks.getTree();
+  const folders = [];
+  const walk = (node, depth) => {
+    for (const child of node.children || []) {
+      if (child.url || child.type === "separator") continue;
+      folders.push({ id: child.id, title: child.title || "Folder", depth });
+      walk(child, depth + 1);
+    }
+  };
+  walk(tree, 0);
+  const result = await openDialog((close) =>
+    h(
+      "form",
+      { className: "dialog-card folder-pick-card", onsubmit: (e) => e.preventDefault() },
+      h("h2", {}, S.space ? `Pinned Tabs of ${S.space.name}` : "Pinned Tabs"),
+      h("p", { className: "dialog-note" }, "The bookmarks folder to show, with its folders."),
+      h(
+        "div",
+        { className: "folder-pick" },
+        folders.map((f) =>
+          h(
+            "button",
+            {
+              type: "button",
+              className: `folder-pick-row${f.id === S.pinRoot ? " selected" : ""}`,
+              style: { "--depth": f.depth },
+              onclick: () => close(f.id),
+            },
+            svg("folder"),
+            h("span", { className: "title" }, f.title)
+          )
+        )
+      ),
+      h(
+        "div",
+        { className: "actions" },
+        h("button", { type: "button", className: "reset", onclick: () => close("") }, "Bookmarks Toolbar"),
+        h("button", { type: "button", dataset: { cancel: "" }, onclick: () => close(null) }, "Cancel")
+      )
+    )
+  );
+  if (result === null || result === S.pinRoot) return;
+  await store.savePinRoot(S.space, result || null);
+}
+
+/** Theme dialog: any color, covering the panel. */
 async function editThemeColor() {
   const theme = S.theme;
-  paintTheme({ ...theme, intensity: null }); // read the default intensity for this text color
-  const defaultIntensity = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--tint")) || 16;
-  themeDraft = { tint: store.themeColor(theme), intensity: store.themeIntensity(theme) ?? defaultIntensity };
-  const preview = () => paintTheme({ ...theme, ...themeDraft });
+  themeDraft = { tint: store.themeColor(theme) };
+  const preview = () => (paintTheme({ ...theme, ...themeDraft }), paintFirefox());
   preview();
   const result = await openDialog((close) => {
     const setTint = (hex) => {
@@ -812,29 +1069,15 @@ async function editThemeColor() {
       },
       onblur: () => (hexField.value = themeDraft.tint),
     });
-    const value = h("span", { className: "range-value" }, `${Math.round(themeDraft.intensity)}%`);
-    const range = h("input", {
-      type: "range",
-      min: 0,
-      max: store.MAX_INTENSITY,
-      step: 1,
-      value: themeDraft.intensity,
-      oninput: (e) => {
-        themeDraft.intensity = Number(e.target.value);
-        value.textContent = `${themeDraft.intensity}%`;
-        preview();
-      },
-    });
     return h(
       "form",
       { className: "dialog-card theme-card", onsubmit: (e) => (e.preventDefault(), close("save")) },
       h("h2", {}, "Theme Color"),
       h("label", { className: "field" }, "Color", h("span", { className: "row" }, color, hexField)),
-      h("label", { className: "field" }, h("span", { className: "range-head" }, "Intensity", value), range),
       h(
         "div",
         { className: "actions" },
-        (theme.tint || Number.isFinite(theme.intensity) || theme.text) &&
+        (theme.tint || theme.text) &&
           h("button", { type: "button", className: "reset", onclick: () => close("reset") }, "Reset"),
         h("button", { type: "button", dataset: { cancel: "" }, onclick: () => close(null) }, "Cancel"),
         h("button", { type: "submit", className: "primary" }, "Save")
@@ -843,9 +1086,16 @@ async function editThemeColor() {
   });
   const draft = themeDraft;
   themeDraft = null;
-  if (result === "save") await store.saveTheme({ ...theme, tint: draft.tint, intensity: draft.intensity });
-  else if (result === "reset") await store.saveTheme({});
-  else paintTheme(S.theme);
+  if (result === "save") {
+    const { intensity, ...rest } = theme; // from before colors always covered fully
+    await store.saveTheme({ ...rest, tint: draft.tint }, S.space);
+  }
+  // A space goes back to its container's color.
+  else if (result === "reset") await store.saveTheme(S.space ? null : {}, S.space);
+  else {
+    paintTheme(S.theme);
+    paintFirefox();
+  }
 }
 
 async function copy(text) {
@@ -984,13 +1234,37 @@ els.dockToday.addEventListener("click", () => {
 }
 
 let pinsCollapsed = false;
+let tabStrip = false; // Firefox's tab strip shows (needs BookmArc's userChrome.css)
+let colorFirefox = true; // Firefox's own window takes the panel's colors
+let firefoxColors; // what Firefox was last given (JSON), so a repaint in the same colors isn't sent again
+
+/**
+ * Firefox's window (title bar, toolbar, address bar, menus) in the panel's
+ * colors, or back to Firefox's own theme. Private windows keep Firefox's
+ * private look.
+ */
+function paintFirefox() {
+  if (S.windowId === null || S.incognito) return;
+  const theme = colorFirefox ? firefoxTheme() : null;
+  const key = JSON.stringify(theme);
+  if (key === firefoxColors) return;
+  firefoxColors = key;
+  if (theme) browser.theme.update(S.windowId, theme).catch(() => {});
+  else browser.theme.reset(S.windowId).catch(() => {});
+}
+
+// The system going light / dark repaints the panel (theme.js); Firefox follows.
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => paintFirefox());
 
 // Layout preferences shared by every window's panel.
-browser.storage.local.get([SIZING_KEY, TODAY_FLOW, PINNED_HEIGHT, PINS_COLLAPSED]).then((r) => {
+browser.storage.local.get([SIZING_KEY, TODAY_FLOW, PINNED_HEIGHT, PINS_COLLAPSED, store.TAB_STRIP_KEY, store.COLOR_FIREFOX_KEY, store.MINI_PLAYER_KEY]).then((r) => {
   applySizing((sizing = r[SIZING_KEY] || {}));
   applyTodayFlow(!!r[TODAY_FLOW]);
   applyPinnedHeight(r[PINNED_HEIGHT]);
   pinsCollapsed = !!r[PINS_COLLAPSED];
+  tabStrip = !!r[store.TAB_STRIP_KEY];
+  colorFirefox = r[store.COLOR_FIREFOX_KEY] !== false;
+  miniPlayer = r[store.MINI_PLAYER_KEY] !== false;
   // Before the first load there's nothing to draw yet; load() picks the flag up.
   if (!document.body.classList.contains("booting")) render();
 });
@@ -1001,6 +1275,15 @@ browser.storage.onChanged.addListener((changes, area) => {
   if (SIZING_KEY in changes) applySizing((sizing = changes[SIZING_KEY].newValue || {}));
   if (TODAY_FLOW in changes) applyTodayFlow(!!changes[TODAY_FLOW].newValue);
   if (PINNED_HEIGHT in changes) applyPinnedHeight(changes[PINNED_HEIGHT].newValue);
+  if (store.TAB_STRIP_KEY in changes) tabStrip = !!changes[store.TAB_STRIP_KEY].newValue;
+  if (store.MINI_PLAYER_KEY in changes) {
+    miniPlayer = changes[store.MINI_PLAYER_KEY].newValue !== false;
+    renderPlayer();
+  }
+  if (store.COLOR_FIREFOX_KEY in changes) {
+    colorFirefox = changes[store.COLOR_FIREFOX_KEY].newValue !== false;
+    paintFirefox();
+  }
   if (PINS_COLLAPSED in changes) {
     pinsCollapsed = !!changes[PINS_COLLAPSED].newValue;
     render();
@@ -1074,6 +1357,7 @@ function selectionMenu() {
     links.length && { label: "Copy Links", run: done(() => copy(links.join("\n"))) },
     "-",
     n && { label: `New Folder with ${plural(n, "Item")}`, run: done(() => newFolder({ pinIds, tabs })) },
+    moveToSpaceItem(openTabs),
     openTabs.length && { label: `Close ${plural(openTabs.length, "Tab")}`, run: done(() => closeTabs(openTabs)) },
     pinIds.length && {
       label: pinIds.length === 1 ? "Remove Pin" : "Remove Pins",
@@ -1084,6 +1368,51 @@ function selectionMenu() {
 }
 
 // ---------- Context menus ----------
+
+/** "Move to Space ▸": the other spaces; the tabs open again in that container. null without other spaces. */
+function moveToSpaceItem(tabIds) {
+  if (!S.space || S.spaces.length < 2 || !tabIds.length) return null;
+  return {
+    label: "Move to Space",
+    submenu: S.spaces
+      .filter((s) => s.id !== S.space.id)
+      .map((s) => ({ label: s.name, run: () => browser.runtime.sendMessage({ type: "space:move", tabIds, space: s.id }) })),
+  };
+}
+
+/** A space icon's menu: how the panel looks, the search engine its command bar uses; close the window's tabs in that space. */
+async function spaceMenu(space) {
+  const tabs = S.allTabs.filter((t) => !t.pinned && spaceOfTab(t) === space.id).map((t) => t.id);
+  const [engines, chosen] = await Promise.all([browser.search.get().catch(() => []), store.getSpaceEngine(space.id)]);
+  const current = engines.some((e) => e.name === chosen) ? chosen : null;
+  const pick = (name) => store.saveSpaceEngine(space.id, name);
+  return [
+    ...lookItems(space.id === S.space?.id),
+    "-",
+    engines.length && {
+      label: `Search with ${current || "Firefox's Default"}`,
+      submenu: [
+        { label: `${current ? "" : "✓ "}Firefox's Default`, run: () => pick(null) },
+        "-",
+        ...engines.map((e) => ({ label: `${e.name === current ? "✓ " : ""}${e.name}`, run: () => pick(e.name) })),
+      ],
+    },
+    "-",
+    {
+      label: tabs.length ? `Close ${plural(tabs.length, "Tab")} in ${space.name}` : `No Tabs in ${space.name}`,
+      danger: !!tabs.length,
+      disabled: !tabs.length,
+      run: () => (space.id === S.space.id ? closeTabs(tabs) : browser.tabs.remove(tabs)),
+    },
+  ].filter(Boolean);
+}
+
+/** The tabs closed last in this space, to open again (also Cmd/Ctrl+Shift+T). */
+function recentlyClosedItem() {
+  const closed = S.closed.slice(0, 10);
+  if (!closed.length) return { label: "Recently Closed", disabled: true };
+  return { label: "Recently Closed", submenu: closed.map((c) => ({ label: c.title, run: () => store.reopenClosed(c, S.windowId) })) };
+}
 
 async function tabMenu(tab) {
   const list = todayTabs();
@@ -1103,6 +1432,7 @@ async function tabMenu(tab) {
     { label: muted ? "Unmute Tab" : "Mute Tab", run: () => browser.tabs.update(tab.id, { muted: !muted }) },
     { label: "Copy Link", run: () => copy(tab.url) },
     { label: "Open in New Window", run: () => browser.windows.create({ tabId: tab.id }) },
+    moveToSpaceItem([tab.id]),
     ...(extra.length
       ? [
           "-",
@@ -1118,7 +1448,7 @@ async function tabMenu(tab) {
     { label: above.length ? `Close ${plural(above.length, "Tab")} Above` : "Close Tabs Above", disabled: !above.length, run: () => closeTabs(above.map((t) => t.id)) },
     { label: below.length ? `Close ${plural(below.length, "Tab")} Below` : "Close Tabs Below", disabled: !below.length, run: () => closeTabs(below.map((t) => t.id)) },
     { label: "Close Tab", danger: true, run: () => closeTabs([tab.id]) },
-  ];
+  ].filter(Boolean);
 }
 
 /** "Close N Open Tabs" for the tabs of `items` (a folder's pins, the favorites); null if none are open. */
@@ -1201,24 +1531,46 @@ function favoriteMenu(fav) {
   ].filter(Boolean);
 }
 
+/**
+ * How the panel looks: in the space icon's menu, or in the header's without
+ * spaces (no icons then). The theme items only for the space shown, whose
+ * colors the dialog previews.
+ */
+function lookItems(withTheme) {
+  const text = themeText(S.theme);
+  return [
+    withTheme && { label: "Edit Theme Color…", run: editThemeColor },
+    withTheme && { label: text === "light" ? "Use Dark Text" : "Use Light Text", run: () => store.saveTheme({ ...S.theme, text: text === "light" ? "dark" : "light" }, S.space) },
+    { label: "Sizing…", run: editSizing },
+    { label: tabStrip ? "Hide Firefox Tab Bar" : "Show Firefox Tab Bar", run: () => store.saveTabStrip(!tabStrip) },
+  ].filter(Boolean);
+}
+
 /** The header's menu: the panel's own settings. */
 function optionsMenu() {
-  const text = themeText(S.theme);
   return [
     { label: "New Folder", run: () => newFolder() },
     // Every pinned tab that's open, in any folder.
     closeOpenTabsItem(S.pins.filter((p) => !isFolder(p))),
     closeEmptyTabsItem(),
+    recentlyClosedItem(),
     "-",
-    { label: "Edit Theme Color…", run: editThemeColor },
-    { label: text === "light" ? "Use Dark Text" : "Use Light Text", run: () => store.saveTheme({ ...S.theme, text: text === "light" ? "dark" : "light" }) },
-    { label: "Sizing…", run: editSizing },
+    { label: "Bookmarks Folder…", run: chooseBookmarksFolder },
+    ...(S.space ? [] : lookItems(true)),
+    { label: colorFirefox ? "Keep Firefox's Own Colors" : "Color Firefox Too", run: () => store.saveColorFirefox(!colorFirefox) },
+    { label: miniPlayer ? "Hide Mini Player" : "Show Mini Player", run: () => store.saveMiniPlayer(!miniPlayer) },
   ].filter(Boolean);
 }
 
 document.addEventListener("contextmenu", async (e) => {
   if (e.target.closest("input")) return;
   e.preventDefault();
+  const spaceBtn = e.target.closest(".space-btn");
+  if (spaceBtn) {
+    const space = S.spaces?.find((s) => s.id === spaceBtn.dataset.space);
+    if (space) showMenu(await spaceMenu(space), e.clientX, e.clientY);
+    return;
+  }
   const row = rowAt(e.target);
   if (row && selection.has(keyOf(row)) && selection.size > 1) {
     showMenu(selectionMenu(), e.clientX, e.clientY);
@@ -1340,10 +1692,16 @@ els.closeAll.addEventListener("click", async () => {
   }
   disarmCloseAll();
   // A fresh tab first: closing the last one would close the window.
-  await browser.tabs.create({ windowId: S.windowId, active: true });
+  await browser.tabs.create({ windowId: S.windowId, active: true, ...spaceProps() });
   await browser.tabs.remove(ids);
 });
 els.closeAll.addEventListener("blur", () => closeAllArmed && disarmCloseAll());
+
+// A space icon: the window goes there (the background page switches, hides and shows).
+els.spaces.addEventListener("click", (e) => {
+  const id = e.target.closest(".space-btn")?.dataset.space;
+  if (id && id !== S.space?.id) browser.runtime.sendMessage({ type: "space:switch", windowId: S.windowId, space: id });
+});
 
 /* "New Tab" opens the command bar (the service worker owns it). */
 els.newTab.addEventListener("click", openCommandBar);
@@ -1466,6 +1824,9 @@ function climbOut(row, e) {
 /** What a drop at `e` would do, or null. */
 function dropTarget(e) {
   if (!drag) return null;
+  // A tab dropped on another space's icon moves there.
+  const spaceBtn = e.target.closest(".space-btn");
+  if (spaceBtn) return drag.kind === "tab" && spaceBtn.dataset.space !== S.space?.id ? { zone: "space", el: spaceBtn, space: spaceBtn.dataset.space } : null;
   if (e.target.closest("#favorites")) {
     if (drag.kind === "pin" && isFolder(pinById(drag.id))) return null;
     const tile = e.target.closest(".tile");
@@ -1524,14 +1885,16 @@ document.addEventListener("drop", async (e) => {
   const pin = source.kind === "pin" ? pinById(source.id) : null;
   const fav = source.kind === "fav" ? S.favorites.find((f) => f.id === source.id) : null;
 
-  if (target.zone === "favorites") {
+  if (target.zone === "space") {
+    if (tab) await browser.runtime.sendMessage({ type: "space:move", tabIds: [tab.id], space: target.space });
+  } else if (target.zone === "favorites") {
     if (tab) await addFavorite(tab);
     if (pin) await pinToFavorite(pin, target.targetId);
     if (fav && target.targetId !== fav.id) {
       const rest = S.favorites.filter((f) => f.id !== fav.id);
       const at = target.targetId ? rest.findIndex((f) => f.id === target.targetId) : -1;
       rest.splice(at >= 0 ? at : rest.length, 0, fav);
-      await store.saveFavorites(rest);
+      await saveFavorites(rest);
     }
   } else if (target.zone === "pinned") {
     if (tab) await pinTab(tab, target.targetId, target.where);
@@ -1564,16 +1927,31 @@ for (const event of [
   browser.bookmarks.onRemoved,
   browser.bookmarks.onChanged,
   browser.bookmarks.onMoved,
+  // The spaces are the containers: made, renamed or deleted in Multi-Account Containers.
+  browser.contextualIdentities?.onCreated,
+  browser.contextualIdentities?.onUpdated,
+  browser.contextualIdentities?.onRemoved,
 ]) {
-  event.addListener(refresh);
+  event?.addListener(refresh);
 }
+
+// Firefox's closed tabs don't say which space they were in: note it while the
+// tab is still in the list (refresh() reloads it a moment later).
+browser.tabs.onRemoved.addListener((tabId, info) => {
+  if (info.windowId !== S.windowId || info.isWindowClosing) return;
+  const tab = S.allTabs.find((t) => t.id === tabId);
+  if (tab) store.rememberClosed(tab, S.space ? spaceOfTab(tab) : null);
+});
 
 // The background page goes to sleep when idle; holding a port keeps it awake
 // (and Cmd/Ctrl+T quick) while the sidebar is open.
 browser.runtime.connect({ name: "sidebar" });
 
 // ?window=<id> shows another window's tabs: lets the sidebar be opened as a page while developing.
-S.windowId = Number(new URLSearchParams(location.search).get("window")) || (await browser.windows.getCurrent()).id;
+const ownWindow = await browser.windows.getCurrent();
+S.windowId = Number(new URLSearchParams(location.search).get("window")) || ownWindow.id;
+// Private windows have no containers, so no spaces.
+S.incognito = (await browser.windows.get(S.windowId).catch(() => ownWindow)).incognito;
 // Tabs opened before their bookmark existed (or while the extension was off) join their pinned rows.
 await store.adoptAll().catch((err) => console.error("BookmArc: binding open tabs failed", err));
 refresh();

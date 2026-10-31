@@ -13,6 +13,8 @@
     if (text) root.dataset.text = text;
     const bg = localStorage.getItem("theme:bg");
     if (bg) root.style.setProperty("--bg", bg);
+    const field = localStorage.getItem("theme:field");
+    if (field) root.style.setProperty("--field", field);
   } catch {
     // private window or blocked storage: the default color is fine
   }

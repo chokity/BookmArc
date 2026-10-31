@@ -4,7 +4,7 @@
    picking something loads it in that tab, and the bar goes away. */
 import { h, setIcon } from "../shared/dom.js";
 import { resolve, engineName, runSearch, switchToTab, suggestFor, topSiteItems } from "../shared/suggest.js";
-import { getTheme } from "../shared/store.js";
+import { getTheme, getSpaces, getSpaceEngine, getWindowSpace, getTabSpaces, spaceOf } from "../shared/store.js";
 import { paintTheme } from "../shared/theme.js";
 
 // Filled in at startup from the tab this page lives in.
@@ -34,6 +34,7 @@ let itemsFor = "";
 let selected = 0;
 let token = 0;
 let engine = "the web";
+let spaceEngine = null; // the engine this tab's space searches with; null: Firefox's default
 let scope = null; // { label, host, engine } — search inside one site
 let engines = [];
 let closing = false;
@@ -100,7 +101,7 @@ async function runScoped(text) {
   if (scope.engine) {
     await browser.search.search({ query: text, engine: scope.engine, tabId: targetTab() });
   } else {
-    await runSearch(targetTab(), `site:${scope.host} ${text}`);
+    await runSearch(targetTab(), `site:${scope.host} ${text}`, spaceEngine);
   }
   if (editTabId) await backToEdited();
 }
@@ -115,7 +116,7 @@ async function open(target) {
     throw new Error("firefox page");
   }
   if (target.url) await browser.tabs.update(targetTab(), { url: target.url });
-  if (target.search) await runSearch(targetTab(), target.search);
+  if (target.search) await runSearch(targetTab(), target.search, spaceEngine);
   if (editTabId) await backToEdited();
 }
 
@@ -339,16 +340,27 @@ const own = (async () => {
   update(); // frequent sites, before the slower lookups
 })();
 
+/** The space this bar is in (null: no spaces). */
+async function ownSpace() {
+  const [self, spaces, tabSpaces] = await Promise.all([browser.tabs.getCurrent(), getSpaces(), getTabSpaces()]);
+  if (!spaces?.length || self.incognito) return null;
+  const id = spaceOf(self, tabSpaces) || (await getWindowSpace(self.windowId));
+  return spaces.find((s) => s.id === id) || null;
+}
+
 // Typing can beat these; they only fill in the tint and the engine's name.
 (async () => {
   await own;
 
-  // Tint with the theme color.
-  paintTheme(await getTheme());
+  // Tint with the theme color: the one of this tab's space, as in the sidebar.
+  const space = await ownSpace();
+  paintTheme(await getTheme(space));
 
   // The engine name only fills in the "Search <engine>" hint.
-  engine = await engineName();
   engines = await browser.search.get().catch(() => []);
+  const chosen = await getSpaceEngine(space?.id);
+  spaceEngine = engines.some((e) => e.name === chosen) ? chosen : null;
+  engine = spaceEngine || (await engineName());
   if (!input.value.trim()) return;
   hint.textContent = `Search ${engine}`;
   render();

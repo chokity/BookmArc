@@ -20,10 +20,27 @@ $CssEnd = "/* <<< BookmArc <<< */"
 $JsBegin = "// >>> BookmArc >>>"
 $JsEnd = "// <<< BookmArc <<<"
 
-$root = Join-Path $env:APPDATA "Mozilla\Firefox\Profiles"
-if (-not (Test-Path $root)) { Write-Error "No Firefox profiles found in $root" }
+$base = Join-Path $env:APPDATA "Mozilla\Firefox"
+# Candidate profile folders: the ones profiles.ini lists (they can live
+# anywhere), then the usual ones in Profiles.
+$dirs = @()
+$ini = Join-Path $base "profiles.ini"
+if (Test-Path $ini) {
+  $path = $null
+  $rel = $true
+  foreach ($line in @(Get-Content $ini) + "[end]") {
+    if ($line -match '^\[') {
+      if ($path) { $dirs += $(if ($rel) { Join-Path $base $path } else { $path }) }
+      $path = $null
+      $rel = $true
+    } elseif ($line -match '^Path=(.+)$') { $path = $Matches[1] -replace '/', '\' }
+    elseif ($line -match '^IsRelative=(\d)') { $rel = $Matches[1] -ne '0' }
+  }
+}
+$profiles = Join-Path $base "Profiles"
+if (Test-Path $profiles) { $dirs += @(Get-ChildItem $profiles -Directory | ForEach-Object { $_.FullName }) }
 
-$all = @(Get-ChildItem $root -Directory | Where-Object { Test-Path (Join-Path $_.FullName "prefs.js") })
+$all = @($dirs | Where-Object { Test-Path (Join-Path $_ "prefs.js") } | Sort-Object -Unique | ForEach-Object { Get-Item $_ })
 $bookmarc = @($all | Where-Object {
   $ext = Join-Path $_.FullName "extensions.json"
   (Test-Path $ext) -and ((Get-Content $ext -Raw) -match [regex]::Escape('"id":"' + $AddonId + '"'))
@@ -85,10 +102,10 @@ $css = @'
 /* ---------- The sidebar's background, for Firefox's own panels ---------- */
 
 /* Firefox's panels (bookmarks, history, synced tabs) are chrome and can't read
-   the sidebar's theme, so they get its default: #f3dddb, covering the whole
-   background (shared/store.js). A theme color of one's own shows in the
-   sidebar itself, not around Firefox's panels. Dark mode keeps Firefox's dark
-   panels readable. */
+   the sidebar's theme. While BookmArc colors Firefox (or another theme is on),
+   they take the window frame's color, which is the sidebar's background.
+   Otherwise they get the sidebar's default: #f3dddb, covering the whole
+   background (shared/store.js); dark mode keeps Firefox's dark panels readable. */
 :root {
   --bookmarc-panel-bg: #f3dddb;
 }
@@ -97,6 +114,10 @@ $css = @'
   :root {
     --bookmarc-panel-bg: #1c1a22;
   }
+}
+
+:root[lwtheme] {
+  --bookmarc-panel-bg: var(--lwt-accent-color, #f3dddb);
 }
 
 /* The panel area carries the color; Firefox's panels then let it through. */
@@ -185,8 +206,10 @@ $css = @'
 }
 
 /* The tab strip: the sidebar lists the tabs. The window buttons live in the native
-   title bar (browser.tabs.inTitlebar = 0), so the whole strip can go. */
-#TabsToolbar {
+   title bar (browser.tabs.inTitlebar = 0), so the whole strip can go. The sidebar's
+   menu can bring it back ("Show Firefox Tab Bar"): BookmArc then starts each
+   window's title with an invisible mark (U+200B, windows.update titlePreface). */
+#main-window:not([titlepreface^="\200B"]) #TabsToolbar {
   visibility: collapse !important;
 }
 

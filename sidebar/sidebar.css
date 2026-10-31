@@ -170,6 +170,23 @@ body.drag-active .fav-drop-text { display: inline; }
   background: var(--fg);
 }
 .tile .icon { width: 20px; height: 20px; display: grid; place-items: center; }
+/* The unread count the page shows in its title (sidebar.js: unreadCount). */
+.tile .unread {
+  position: absolute;
+  top: 4px; right: 4px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: #e5484d;
+  color: #ffffff;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 16px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.tile .unread[hidden] { display: none; }
 .tile img { width: 20px; height: 20px; object-fit: contain; }
 
 .letter {
@@ -298,10 +315,44 @@ body:hover .link-btn {
 
 /* ---------- Status bar ---------- */
 
-/* Pinned to the bottom, under the scrolling list: the tab count and "Close All". */
-.status-bar {
+/* Pinned to the bottom, under the scrolling list: the tab count, the spaces
+   (centered) and "Close All". */
+/* Mini player: tabs playing sound, over the status bar (sidebar.js: renderPlayer). */
+.player {
   flex: none;
   display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: -4px;
+}
+.player[hidden] { display: none; }
+.player-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 40px;
+  padding: 0 4px 0 10px;
+  border-radius: var(--radius);
+  background: var(--tile);
+  box-shadow: var(--shadow);
+  cursor: pointer;
+}
+.player-row:hover { background: var(--tile-hover); }
+.player-row .favicon { width: 16px; height: 16px; flex: none; display: grid; place-items: center; }
+.player-row .favicon img { width: 16px; height: 16px; object-fit: contain; }
+.player-row .favicon .letter { width: 16px; height: 16px; font-size: 9px; border-radius: 4px; }
+.player-text { flex: 1; min-width: 0; display: flex; flex-direction: column; line-height: 1.25; }
+.player-title, .player-sub { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.player-title { color: var(--fg); font-size: 12px; }
+.player-sub { color: var(--muted); font-size: 11px; }
+.player-row .icon-btn { width: 26px; height: 26px; border-radius: 7px; }
+.player-row .icon-btn svg { width: 14px; height: 14px; }
+.player-row .close svg { width: 12px; height: 12px; }
+
+.status-bar {
+  flex: none;
+  display: grid;
+  grid-template-columns: 1fr minmax(0, auto) 1fr;
   align-items: center;
   gap: 8px;
   height: 30px;
@@ -311,9 +362,10 @@ body:hover .link-btn {
   color: var(--muted);
   font-size: 11px;
 }
-.tab-count { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tab-count { grid-column: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .close-all {
-  flex: none;
+  grid-column: 3;
+  justify-self: end;
   height: 22px;
   padding: 0 8px;
   border: 0;
@@ -327,6 +379,39 @@ body:hover .link-btn {
 }
 .close-all:hover:not(:disabled) { background: var(--btn-hover); color: var(--fg); }
 .close-all:disabled { opacity: 0.4; }
+/* The spaces: one icon per container, in its color; many scroll sideways. */
+.spaces {
+  grid-column: 2;
+  display: flex;
+  gap: 2px;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.spaces[hidden] { display: none; }
+.space-btn {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  cursor: default;
+  transition: background 120ms;
+}
+.space-btn:hover { background: var(--btn-hover); }
+.space-btn.active { background: var(--row-active); }
+/* A tab dragged over another space's icon moves there on drop. */
+.space-btn.drag-over { background: var(--row-active); box-shadow: inset 0 0 0 1.5px var(--fg); }
+.space-icon {
+  width: 16px;
+  height: 16px;
+  background-color: var(--space-color, var(--muted));
+  mask: var(--space-icon) center / contain no-repeat;
+}
 /* Armed: the next click closes everything. */
 .close-all.armed, .close-all.armed:hover { background: #e5484d; color: #fff; }
 
@@ -559,7 +644,35 @@ body:hover .link-btn {
 .actions button.primary.danger { background: #e5484d; }
 .actions button.reset { margin-inline-end: auto; }
 
-/* Theme dialog: color picker and intensity slider. No dimmed backdrop, so
+/* "Bookmarks Folder…": every bookmarks folder, indented by depth; the space's pick highlighted. */
+.dialog-note { margin: -6px 0 0; font-size: 11px; color: var(--muted); }
+.folder-pick {
+  display: flex;
+  flex-direction: column;
+  max-height: min(360px, 55vh);
+  overflow-y: auto;
+  margin: 0 -6px;
+}
+.folder-pick-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 0 8px 0 calc(8px + var(--depth, 0) * 14px);
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--fg);
+  font: inherit;
+  text-align: start;
+  cursor: default;
+}
+.folder-pick-row:hover { background: var(--row-hover); }
+.folder-pick-row.selected { background: var(--row-active); font-weight: 600; }
+.folder-pick-row svg { flex: none; width: 16px; height: 16px; color: var(--muted); }
+.folder-pick-row .title { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* Theme dialog: color picker. No dimmed backdrop, so
    the sidebar behind it shows the color exactly as it will look. */
 .dialog:has(.theme-card, .sizing-card) { background: transparent; }
 /* Sizing sits at the bottom, so the rows it changes stay in view above it. */
@@ -574,7 +687,6 @@ body:hover .link-btn {
   border-radius: 8px;
   background: var(--field);
 }
-.theme-card input[type="range"] { width: 100%; accent-color: var(--space); }
 .range-head { display: flex; justify-content: space-between; }
 .sizing-card input[type="range"] { width: 100%; accent-color: var(--fg); }
 .range-value { color: var(--fg); font-variant-numeric: tabular-nums; }
@@ -758,3 +870,14 @@ body.booting .scroll { visibility: hidden; }
 .tab.split .half:hover .close { visibility: visible; }
 .tab.split.active { background: color-mix(in srgb, var(--row-active) 45%, transparent); }
 .half.dragging { opacity: 0.4; }
+
+/* The old space's picture while a switch slides it off (sidebar.js: swipeGhost). */
+.swipe-ghost {
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 5;
+}

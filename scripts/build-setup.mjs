@@ -41,29 +41,55 @@ UNINSTALL=0
 [ "\${1:-}" = "--uninstall" ] && UNINSTALL=1
 
 case "$(uname -s)" in
-  Darwin) ROOTS=("$HOME/Library/Application Support/Firefox/Profiles") ;;
-  *) ROOTS=("$HOME/.mozilla/firefox" "$HOME/snap/firefox/common/.mozilla/firefox" "$HOME/.var/app/org.mozilla.firefox/.mozilla/firefox") ;;
+  Darwin) BASES=("$HOME/Library/Application Support/Firefox") ;;
+  *) BASES=("$HOME/.config/mozilla/firefox" "$HOME/.mozilla/firefox" "$HOME/snap/firefox/common/.mozilla/firefox" "$HOME/.var/app/org.mozilla.firefox/.mozilla/firefox") ;;
 esac
+
+# Candidate profile folders under a Firefox base folder: the ones profiles.ini
+# lists (they can live anywhere), then the usual ones next to it.
+profile_dirs() {
+  local base="$1" dir
+  if [ -f "$base/profiles.ini" ]; then
+    tr -d '\\r' 2> /dev/null < "$base/profiles.ini" | awk -F= -v base="$base" '
+      function emit() { if (path != "") print (rel == "0" ? path : base "/" path) }
+      /^\\[/ { emit(); path = ""; rel = "1" }
+      $1 == "Path" { path = substr($0, 6) }
+      $1 == "IsRelative" { rel = $2 }
+      END { emit() }'
+  fi
+  for dir in "$base"/Profiles/*/ "$base"/*/; do echo "\${dir%/}"; done
+}
 
 # Every Firefox profile folder (has prefs.js); BookmArc's first.
 BOOKMARC=()
 OTHER=()
-for root in "\${ROOTS[@]}"; do
-  [ -d "$root" ] || continue
-  for dir in "$root"/*/; do
-    dir="\${dir%/}"
-    [ -f "$dir/prefs.js" ] || continue
-    if grep -q "\\"id\\":\\"$ADDON_ID\\"" "$dir/extensions.json" 2>/dev/null; then BOOKMARC+=("$dir"); else OTHER+=("$dir"); fi
-  done
-done
+SEEN="|"
+while IFS= read -r dir; do
+  [ -f "$dir/prefs.js" ] || continue
+  case "$SEEN" in *"|$dir|"*) continue ;; esac
+  SEEN="$SEEN$dir|"
+  if grep -q "\\"id\\":\\"$ADDON_ID\\"" "$dir/extensions.json" 2>/dev/null; then BOOKMARC+=("$dir"); else OTHER+=("$dir"); fi
+done < <(for base in "\${BASES[@]}"; do if [ -d "$base" ]; then profile_dirs "$base"; fi; done)
 
 if [ \${#BOOKMARC[@]} -gt 0 ]; then
   CANDIDATES=("\${BOOKMARC[@]}")
 else
   echo "No Firefox profile with BookmArc installed was found. Install BookmArc first, or pick a profile:"
-  CANDIDATES=("\${OTHER[@]}")
+  CANDIDATES=(\${OTHER[@]+"\${OTHER[@]}"})
 fi
-[ \${#CANDIDATES[@]} -gt 0 ] || { echo "No Firefox profiles found." >&2; exit 1; }
+if [ \${#CANDIDATES[@]} -eq 0 ]; then
+  echo "No Firefox profiles found." >&2
+  # macOS privacy protection keeps the terminal out of other apps' data.
+  for base in "\${BASES[@]}"; do
+    [ -d "$base" ] || continue
+    if ! ls "$base" > /dev/null 2>&1 || { [ -f "$base/profiles.ini" ] && ! cat "$base/profiles.ini" > /dev/null 2>&1; }; then
+      echo "The system won't let this terminal read $base." >&2
+      [ "$(uname -s)" = Darwin ] && echo "Allow it in System Settings > Privacy & Security > Full Disk Access (turn on your terminal app), then open a new terminal window and run this again." >&2
+      break
+    fi
+  done
+  exit 1
+fi
 
 PROFILE="\${CANDIDATES[0]}"
 if [ \${#CANDIDATES[@]} -gt 1 ]; then
@@ -159,10 +185,27 @@ $CssEnd = "/* <<< BookmArc <<< */"
 $JsBegin = "// >>> BookmArc >>>"
 $JsEnd = "// <<< BookmArc <<<"
 
-$root = Join-Path $env:APPDATA "Mozilla\\Firefox\\Profiles"
-if (-not (Test-Path $root)) { Write-Error "No Firefox profiles found in $root" }
+$base = Join-Path $env:APPDATA "Mozilla\\Firefox"
+# Candidate profile folders: the ones profiles.ini lists (they can live
+# anywhere), then the usual ones in Profiles.
+$dirs = @()
+$ini = Join-Path $base "profiles.ini"
+if (Test-Path $ini) {
+  $path = $null
+  $rel = $true
+  foreach ($line in @(Get-Content $ini) + "[end]") {
+    if ($line -match '^\\[') {
+      if ($path) { $dirs += $(if ($rel) { Join-Path $base $path } else { $path }) }
+      $path = $null
+      $rel = $true
+    } elseif ($line -match '^Path=(.+)$') { $path = $Matches[1] -replace '/', '\\' }
+    elseif ($line -match '^IsRelative=(\\d)') { $rel = $Matches[1] -ne '0' }
+  }
+}
+$profiles = Join-Path $base "Profiles"
+if (Test-Path $profiles) { $dirs += @(Get-ChildItem $profiles -Directory | ForEach-Object { $_.FullName }) }
 
-$all = @(Get-ChildItem $root -Directory | Where-Object { Test-Path (Join-Path $_.FullName "prefs.js") })
+$all = @($dirs | Where-Object { Test-Path (Join-Path $_ "prefs.js") } | Sort-Object -Unique | ForEach-Object { Get-Item $_ })
 $bookmarc = @($all | Where-Object {
   $ext = Join-Path $_.FullName "extensions.json"
   (Test-Path $ext) -and ((Get-Content $ext -Raw) -match [regex]::Escape('"id":"' + $AddonId + '"'))

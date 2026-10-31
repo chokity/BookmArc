@@ -34,8 +34,10 @@ export async function engineName() {
   }
 }
 
-export async function runSearch(tabId, text) {
-  if (browser.search.query) await browser.search.query({ text, tabId });
+/** Search `text` in tab `tabId`, with `engine` (a name) or else Firefox's default. */
+export async function runSearch(tabId, text, engine = null) {
+  if (engine) await browser.search.search({ query: text, engine, tabId });
+  else if (browser.search.query) await browser.search.query({ text, tabId });
   else await browser.search.search({ query: text, tabId });
 }
 

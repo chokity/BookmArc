@@ -20,10 +20,10 @@
 /* ---------- The sidebar's background, for Firefox's own panels ---------- */
 
 /* Firefox's panels (bookmarks, history, synced tabs) are chrome and can't read
-   the sidebar's theme, so they get its default: #f3dddb, covering the whole
-   background (shared/store.js). A theme color of one's own shows in the
-   sidebar itself, not around Firefox's panels. Dark mode keeps Firefox's dark
-   panels readable. */
+   the sidebar's theme. While BookmArc colors Firefox (or another theme is on),
+   they take the window frame's color, which is the sidebar's background.
+   Otherwise they get the sidebar's default: #f3dddb, covering the whole
+   background (shared/store.js); dark mode keeps Firefox's dark panels readable. */
 :root {
   --bookmarc-panel-bg: #f3dddb;
 }
@@ -32,6 +32,10 @@
   :root {
     --bookmarc-panel-bg: #1c1a22;
   }
+}
+
+:root[lwtheme] {
+  --bookmarc-panel-bg: var(--lwt-accent-color, #f3dddb);
 }
 
 /* The panel area carries the color; Firefox's panels then let it through. */
@@ -120,8 +124,10 @@
 }
 
 /* The tab strip: the sidebar lists the tabs. The window buttons live in the native
-   title bar (browser.tabs.inTitlebar = 0), so the whole strip can go. */
-#TabsToolbar {
+   title bar (browser.tabs.inTitlebar = 0), so the whole strip can go. The sidebar's
+   menu can bring it back ("Show Firefox Tab Bar"): BookmArc then starts each
+   window's title with an invisible mark (U+200B, windows.update titlePreface). */
+#main-window:not([titlepreface^="\200B"]) #TabsToolbar {
   visibility: collapse !important;
 }
 

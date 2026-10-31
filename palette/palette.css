@@ -4,10 +4,10 @@
 
 html, body { height: 100%; }
 
-/* A new tab's page: tinted background, the bar centered near the top. */
+/* A new tab's page: the address bar's lighter tint, the bar centered near the top. */
 body {
   margin: 0;
-  background: var(--bg, color-mix(in srgb, var(--space) var(--tint), var(--base))); /* --bg: exact, from theme.js */
+  background: var(--field, var(--bg, color-mix(in srgb, var(--space) var(--tint), var(--base)))); /* --field, --bg: exact, from theme.js */
   color: var(--fg);
   font: 14px/1.35 system-ui, -apple-system, "Segoe UI", sans-serif;
 }
